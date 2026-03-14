@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
-const connectDB = require('./database/config'); // Import your DB function
+const connectDB = require('../database/config'); // Import your DB function
 
 const app = express();
 
