@@ -6,7 +6,7 @@ const bcrypt = require('bcrypt');
 const adminRouter = express.Router();
 const { sendWelcomeEmail } = require('../utils/emailService');
 
-adminRouter.post('/admin/create/employee', async (req, res) => {
+adminRouter.post('/admin/create/', async (req, res) => {
     try {
         const { name, email, role } = req.body;
 

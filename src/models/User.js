@@ -2,9 +2,10 @@ const mongoose = require('mongoose');
 
 const userSchema = new mongoose.Schema({
     name: { type: String, required: true },
-    email: { type: String, required: true, unique: true },
+    email: { type: String, unique: [true, 'Email exists already'], required: true },
     password: { type: String, required: true, select: false },
-    employeeId: { type: String, required: true, unique: true },
+    employeeId: { type: String, required: true, unique: [true, 'User exists already'] },
+    mobile: { type: Number },
     role: {
         type: String,
         enum: ['Admin1', 'Admin2', 'Admin3', 'Employee'],

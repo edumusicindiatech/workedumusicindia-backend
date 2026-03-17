@@ -9,6 +9,7 @@ const validator = require('validator');
 // User / Admin Login
 authRouter.post('/login', async (req, res) => {
     try {
+        console.log('reaching')
         const { employeeId, password } = req.body;
 
         if (!employeeId || !password) {
@@ -20,7 +21,7 @@ authRouter.post('/login', async (req, res) => {
             );
         }
 
-        const user = await User.findOne({ employeeId });
+        const user = await User.findOne({ employeeId }).select('+password');
         if (!user) {
             return res.status(404).json(
                 {
@@ -193,6 +194,49 @@ authRouter.get('/refresh-token', async (req, res) => {
             message: "Server error during token refresh",
             error: error.message
         });
+    }
+});
+
+// TEMPORARY DEV ROUTE: Create Initial Admin
+// DELETE THIS BEFORE DEPLOYING TO PRODUCTION!
+authRouter.post('/setup-admin', async (req, res) => {
+    try {
+        const { name, email, password, employeeId, role } = req.body;
+
+        // Check if admin already exists to prevent duplicates
+        const existingAdmin = await User.findOne({ email });
+        if (existingAdmin) {
+            return res.status(400).json({ message: "Admin already exists with this email" });
+        }
+
+        // Hash the password
+        const hashedPassword = await bcrypt.hash(password, 10);
+
+        // Create the admin
+        const newAdmin = new User({
+            name,
+            email, // MAKE SURE THIS IS A REAL EMAIL YOU CAN CHECK
+            password: hashedPassword,
+            employeeId,
+            role: role || 'Admin1', // Defaults to Admin1
+            isFirstLogin: false
+        });
+
+        await newAdmin.save();
+
+        res.status(201).json({
+            success: true,
+            message: "Admin account created successfully! You can now test email notifications.",
+            admin: {
+                name: newAdmin.name,
+                email: newAdmin.email,
+                role: newAdmin.role
+            }
+        });
+
+    } catch (error) {
+        console.log('Error creating admin:', error);
+        res.status(500).json({ message: "Server error", error: error.message });
     }
 });
 
