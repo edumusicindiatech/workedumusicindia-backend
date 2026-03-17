@@ -10,7 +10,6 @@ const userSchema = new mongoose.Schema({
         enum: ['Admin1', 'Admin2', 'Admin3', 'Employee'],
         default: 'Employee'
     },
-    // Metrics for the Admin Dashboard
     warnings: { type: Number, default: 0 },
     warningMessages: [{
         message: String,
@@ -18,8 +17,8 @@ const userSchema = new mongoose.Schema({
     }],
     totalLateCount: { type: Number, default: 0 },
     totalAbsentCount: { type: Number, default: 0 },
-
-    assignedSchools: [{ type: mongoose.Schema.Types.ObjectId, ref: 'School' }]
+    assignedSchools: [{ type: mongoose.Schema.Types.ObjectId, ref: 'School' }],
+    isFirstLogin: { type: Boolean, default: true }
 }, { timestamps: true });
 
 module.exports = mongoose.model('User', userSchema);
