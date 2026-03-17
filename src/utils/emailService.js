@@ -3,6 +3,7 @@ const { getWelcomeEmailTemplate } = require('../templates/welcomeEmail'); // IMP
 const User = require('../models/User');
 const { getShiftNotificationTemplate } = require('../templates/shiftNotificationEmail');
 const { getSchoolAttendanceTemplate } = require('../templates/schoolAttendanceEmail');
+const { getDailyReportSubmittedTemplate, getMissingReportTemplate } = require('../templates/dailyReportEmails');
 require('dotenv').config();
 
 const transporter = nodemailer.createTransport({
@@ -133,10 +134,94 @@ const sendSchoolAttendanceAlert = async (employee, school, action, time, remark 
     }
 };
 
+const sendTaskUpdateAlert = async (employee, school, action, rejectReason = "") => {
+    try {
+        const admins = await User.find({ role: { $in: ['Admin1', 'Admin2', 'Admin3'] } }).select('email');
+        if (!admins.length) return;
 
+        const adminEmails = admins.map(a => a.email).join(',');
+        const htmlContent = getTaskUpdateTemplate(employee.name, school.schoolName, action, rejectReason);
+
+        const mailOptions = {
+            from: process.env.EMAIL_FROM,
+            to: adminEmails,
+            subject: `Task ${action}: ${employee.name} at ${school.schoolName}`,
+            html: htmlContent,
+        };
+
+        await transporter.sendMail(mailOptions);
+        console.log(`Task ${action} alert sent to admins for ${employee.name}`);
+    } catch (error) {
+        console.error("Failed to send task update alert:", error);
+    }
+};
+
+const sendDailyReportAlert = async (employee, report) => {
+    try {
+        const admins = await User.find({ role: { $in: ['Admin1', 'Admin2', 'Admin3'] } }).select('email');
+        if (!admins.length) return;
+
+        const adminEmails = admins.map(a => a.email).join(',');
+
+        const formattedDate = new Date(report.date).toLocaleDateString('en-IN', {
+            timeZone: 'Asia/Kolkata', dateStyle: 'long'
+        });
+
+        const htmlContent = getDailyReportSubmittedTemplate(
+            employee.name,
+            formattedDate,
+            report.category,
+            report.summary,
+            report.actionItems,
+            report.location
+        );
+
+        const mailOptions = {
+            from: process.env.EMAIL_FROM,
+            to: adminEmails,
+            subject: `Daily Report: ${employee.name} - ${formattedDate}`,
+            html: htmlContent,
+        };
+
+        await transporter.sendMail(mailOptions);
+        console.log(`Daily report alert sent to admins for ${employee.name}`);
+    } catch (error) {
+        console.error("Failed to send daily report alert:", error);
+    }
+};
+
+const sendMissingReportAlert = async (employee) => {
+    try {
+        // Fetch admins to CC them on the warning
+        const admins = await User.find({ role: { $in: ['Admin1', 'Admin2', 'Admin3'] } }).select('email');
+        const adminEmails = admins.map(a => a.email).join(',');
+
+        const todayStr = new Date().toLocaleDateString('en-IN', {
+            timeZone: 'Asia/Kolkata', dateStyle: 'long'
+        });
+
+        const htmlContent = getMissingReportTemplate(employee.name, todayStr);
+
+        const mailOptions = {
+            from: process.env.EMAIL_FROM,
+            to: employee.email, // Send directly to the teacher
+            cc: adminEmails,    // Copy the admins so they know it was missed
+            subject: `🚨 Missing Daily Report - ${todayStr}`,
+            html: htmlContent,
+        };
+
+        await transporter.sendMail(mailOptions);
+        console.log(`Missing report warning sent to ${employee.email} and Admins.`);
+    } catch (error) {
+        console.error("Failed to send missing report warning:", error);
+    }
+};
 
 module.exports = {
     sendWelcomeEmail,
     sendShiftNotificationToAdmins,
-    sendSchoolAttendanceAlert
+    sendSchoolAttendanceAlert,
+    sendTaskUpdateAlert,
+    sendDailyReportAlert,
+    sendMissingReportAlert
 };

@@ -6,6 +6,8 @@ const connectDB = require('../database/config'); // Import your DB function
 const adminRouter = require('../routes/adminRouter');
 const authRouter = require('../routes/authRouter');
 const employeeRouter = require('../routes/employeeRouter');
+const initializeCronJobs = require('./src/jobs/reportCron');
+initializeCronJobs();
 
 const app = express();
 app.use(cookieParser());

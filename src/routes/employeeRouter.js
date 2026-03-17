@@ -2,10 +2,13 @@ const express = require('express');
 const employeeRouter = express.Router();
 const userAuth = require('../middleware/userAuth');
 const DailyShift = require('../models/DailyShift');
-const { sendShiftNotificationToAdmins } = require('../utils/emailService');
+const { sendShiftNotificationToAdmins, sendTaskUpdateAlert } = require('../utils/emailService');
 const Attendance = require('../models/Attendance');
 const School = require('../models/School');
-const { sendSchoolAttendanceAlert } = require('../utils/emailService');
+const { sendSchoolAttendanceAlert, sendTaskUpdateAlert,sendDailyReportAlert } = require('../utils/emailService');
+const OptionalTask = require('../models/OptionalTask');
+const User = require('../models/User');
+const DailyReport = require('../models/DailyReport');
 
 
 employeeRouter.get('/me/profile', userAuth, async (req, res) => {
@@ -293,4 +296,159 @@ employeeRouter.post('/school/:schoolId/check-out', userAuth, async (req, res) =>
         res.status(500).json({ success: false, message: "Server error during check-out" });
     }
 });
+
+// --- GET PENDING OPTIONAL TASKS ---
+employeeRouter.get('/optional-tasks', userAuth, async (req, res) => {
+    try {
+        // Find only pending tasks assigned to this specific teacher
+        const tasks = await OptionalTask.find({
+            teacher: req.user._id,
+            status: 'Pending'
+        }).populate('school', 'schoolName location address'); // Bring in school details
+
+        res.status(200).json({
+            success: true,
+            tasks
+        });
+    } catch (error) {
+        console.error('Error fetching optional tasks:', error);
+        res.status(500).json({ success: false, message: "Server error while fetching tasks" });
+    }
+});
+
+// --- ACCEPT OPTIONAL TASK ---
+employeeRouter.post('/optional-tasks/:taskId/accept', userAuth, async (req, res) => {
+    try {
+        const { taskId } = req.params;
+
+        // 1. Find the task and ensure it is pending
+        const task = await OptionalTask.findOne({
+            _id: taskId,
+            teacher: req.user._id,
+            status: 'Pending'
+        });
+
+        if (!task) {
+            return res.status(404).json({ success: false, message: "Task not found or already processed." });
+        }
+
+        // 2. Update task status to officially mark it as Accepted
+        task.status = 'Accepted';
+        await task.save();
+
+        // 3. TWO-WAY BINDING: Assign the school to the teacher, and the teacher to the school
+        // Using Promise.all executes both database updates simultaneously for better performance
+        await Promise.all([
+            // Update User: Add this school to their assigned array
+            User.findByIdAndUpdate(req.user._id, {
+                $addToSet: { assignedSchools: task.school }
+            }),
+
+            // Update School: Set this teacher as the allotted employee
+            School.findByIdAndUpdate(task.school, {
+                allottedTeacher: req.user._id
+            })
+        ]);
+
+        await sendTaskUpdateAlert(req.user, task.school, 'Accepted');
+
+        res.status(200).json({
+            success: true,
+            message: "Task accepted! The school has been added to your assignments.",
+            task
+        });
+
+    } catch (error) {
+        console.error('Error accepting task:', error);
+        res.status(500).json({ success: false, message: "Server error while accepting task" });
+    }
+});
+
+// --- REJECT OPTIONAL TASK ---
+employeeRouter.post('/optional-tasks/:taskId/reject', userAuth, async (req, res) => {
+    try {
+        const { taskId } = req.params;
+        const { rejectReason } = req.body;
+
+        if (!rejectReason || rejectReason.trim() === "") {
+            return res.status(400).json({ success: false, message: "A reason is required to reject a task." });
+        }
+
+        // 1. Find the task
+        const task = await OptionalTask.findOne({
+            _id: taskId,
+            teacher: req.user._id,
+            status: 'Pending'
+        });
+
+        if (!task) {
+            return res.status(404).json({ success: false, message: "Task not found or already processed." });
+        }
+
+        // 2. Update status and save the reason
+        task.status = 'Rejected';
+        task.rejectReason = rejectReason;
+        await task.save();
+
+        await sendTaskUpdateAlert(req.user, task.school, 'Rejected', rejectReason);
+
+        res.status(200).json({
+            success: true,
+            message: "Task rejected successfully.",
+            task
+        });
+
+    } catch (error) {
+        console.error('Error rejecting task:', error);
+        res.status(500).json({ success: false, message: "Server error while rejecting task" });
+    }
+});
+
+employeeRouter.post('/report/submit', userAuth, async (req, res) => {
+    try {
+        const { category, summary, actionItems, location } = req.body;
+
+        if (!summary) {
+            return res.status(400).json({ success: false, message: "Summary is required." });
+        }
+
+        const todayStr = new Date().toISOString().split('T')[0];
+
+        // 1. Check if they already submitted a report today to prevent duplicates
+        const existingReport = await DailyReport.findOne({
+            employee: req.user._id,
+            date: todayStr
+        });
+
+        if (existingReport) {
+            return res.status(400).json({ success: false, message: "You have already submitted a report for today." });
+        }
+
+        // 2. Create and save the report
+        const newReport = new DailyReport({
+            employee: req.user._id,
+            date: todayStr,
+            category: category || "Routine Visit",
+            summary,
+            actionItems,
+            location
+        });
+
+        await newReport.save();
+
+        // 3. Fire immediate email notification to Admins
+        await sendDailyReportAlert(req.user, newReport);
+
+        res.status(201).json({
+            success: true,
+            message: "Daily report submitted successfully",
+            report: newReport
+        });
+
+    } catch (error) {
+        console.error('Error submitting daily report:', error);
+        res.status(500).json({ success: false, message: "Server error while submitting report" });
+    }
+});
+
 module.exports = employeeRouter
