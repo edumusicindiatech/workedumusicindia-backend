@@ -5,10 +5,11 @@ const DailyShift = require('../models/DailyShift');
 const { sendShiftNotificationToAdmins, sendTaskUpdateAlert } = require('../utils/emailService');
 const Attendance = require('../models/Attendance');
 const School = require('../models/School');
-const { sendSchoolAttendanceAlert, sendTaskUpdateAlert,sendDailyReportAlert } = require('../utils/emailService');
+const { sendSchoolAttendanceAlert, sendDailyReportAlert } = require('../utils/emailService');
 const OptionalTask = require('../models/OptionalTask');
 const User = require('../models/User');
 const DailyReport = require('../models/DailyReport');
+const parseSchoolTime = require('../config/parseSchoolTime');
 
 
 employeeRouter.get('/me/profile', userAuth, async (req, res) => {

@@ -5,11 +5,11 @@ const bcrypt = require('bcrypt');
 const userAuth = require('../middleware/userAuth');
 const { generateAccessToken, generateRefreshToken } = require('../config/token');
 const validator = require('validator');
+const jwt = require('jsonwebtoken')
 
 // User / Admin Login
 authRouter.post('/login', async (req, res) => {
     try {
-        console.log('reaching')
         const { employeeId, password } = req.body;
 
         if (!employeeId || !password) {
@@ -197,46 +197,25 @@ authRouter.get('/refresh-token', async (req, res) => {
     }
 });
 
-// TEMPORARY DEV ROUTE: Create Initial Admin
-// DELETE THIS BEFORE DEPLOYING TO PRODUCTION!
-authRouter.post('/setup-admin', async (req, res) => {
+authRouter.post('/logout', async (req, res) => {
     try {
-        const { name, email, password, employeeId, role } = req.body;
-
-        // Check if admin already exists to prevent duplicates
-        const existingAdmin = await User.findOne({ email });
-        if (existingAdmin) {
-            return res.status(400).json({ message: "Admin already exists with this email" });
-        }
-
-        // Hash the password
-        const hashedPassword = await bcrypt.hash(password, 10);
-
-        // Create the admin
-        const newAdmin = new User({
-            name,
-            email, // MAKE SURE THIS IS A REAL EMAIL YOU CAN CHECK
-            password: hashedPassword,
-            employeeId,
-            role: role || 'Admin1', // Defaults to Admin1
-            isFirstLogin: false
+        // Clear the refresh token cookie with the exact same options used to set it
+        res.clearCookie("refreshToken", {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: 'strict'
         });
 
-        await newAdmin.save();
-
-        res.status(201).json({
+        return res.status(200).json({
             success: true,
-            message: "Admin account created successfully! You can now test email notifications.",
-            admin: {
-                name: newAdmin.name,
-                email: newAdmin.email,
-                role: newAdmin.role
-            }
+            message: "Logged out successfully"
         });
-
     } catch (error) {
-        console.log('Error creating admin:', error);
-        res.status(500).json({ message: "Server error", error: error.message });
+        console.error('Error during logout:', error);
+        return res.status(500).json({
+            success: false,
+            message: "Server error during logout"
+        });
     }
 });
 
