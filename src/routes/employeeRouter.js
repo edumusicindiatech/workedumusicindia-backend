@@ -298,6 +298,56 @@ employeeRouter.post('/school/:schoolId/check-out', userAuth, async (req, res) =>
     }
 });
 
+// --- GET TODAY'S ASSIGNED SCHOOLS & STATUS ---
+employeeRouter.get('/my-itinerary', userAuth, async (req, res) => {
+    try {
+        // 1. Get user and heavily populate the assigned schools
+        const user = await User.findById(req.user._id).populate('assignedSchools');
+
+        if (!user) return res.status(404).json({ success: false, message: "User not found" });
+
+        // 2. Get today's attendance records for this specific employee
+        const startOfDay = new Date();
+        startOfDay.setHours(0, 0, 0, 0);
+
+        const attendances = await Attendance.find({
+            teacher: req.user._id,
+            date: { $gte: startOfDay }
+        });
+
+        // 3. Map the real-time status to each assigned school
+        const itinerary = user.assignedSchools.map(school => {
+            // Find if there is an attendance record for this school today
+            const record = attendances.find(a => a.school.toString() === school._id.toString());
+
+            let currentStatus = 'pending';
+            if (record) {
+                currentStatus = record.checkOutTime ? 'completed' : 'in-progress';
+            }
+
+            return {
+                _id: school._id,
+                schoolName: school.schoolName,
+                address: school.address,
+                location: school.location, // Contains the [lng, lat] coordinates
+                startTime: school.startTime,
+                status: currentStatus,
+                checkInTime: record?.checkInTime || null,
+                checkOutTime: record?.checkOutTime || null
+            };
+        });
+
+        res.status(200).json({
+            success: true,
+            schools: itinerary
+        });
+
+    } catch (error) {
+        console.error('Itinerary Fetch Error:', error);
+        res.status(500).json({ success: false, message: "Server error while fetching itinerary" });
+    }
+});
+
 // --- GET PENDING OPTIONAL TASKS ---
 employeeRouter.get('/optional-tasks', userAuth, async (req, res) => {
     try {
