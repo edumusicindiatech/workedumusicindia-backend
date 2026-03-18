@@ -5,8 +5,10 @@ const validator = require('validator');
 const bcrypt = require('bcrypt');
 const adminRouter = express.Router();
 const { sendWelcomeEmail } = require('../utils/emailService');
+const adminAuth = require('../middleware/adminAuth');
+const userAuth = require('../middleware/userAuth');
 
-adminRouter.post('/admin/create/', async (req, res) => {
+adminRouter.post('/admin/create/', userAuth, adminAuth, async (req, res) => {
     try {
         const { name, email, role } = req.body;
 
@@ -84,6 +86,86 @@ adminRouter.post('/admin/create/', async (req, res) => {
         return res.status(500).json({
             success: false,
             message: "Internal server error."
+        });
+    }
+});
+
+adminRouter.get('/dashboard/overview', userAuth, adminAuth, async (req, res) => {
+    try {
+        const todayStr = new Date().toISOString().split('T')[0];
+        const startOfDay = new Date();
+        startOfDay.setHours(0, 0, 0, 0);
+
+        const totalEmployees = await User.countDocuments({ role: 'Employee' });
+        const presentTodayShifts = await DailyShift.find({ date: todayStr }).distinct('employee');
+        const presentTodayCount = presentTodayShifts.length;
+
+        const pendingCount = totalEmployees - presentTodayCount;
+        const noShowCount = 0;
+
+        const recentShifts = await DailyShift.find({ date: todayStr })
+            .populate('employee', 'name')
+            .sort({ loginTime: -1 })
+            .limit(10);
+
+        const recentAttendances = await Attendance.find({ date: { $gte: startOfDay } })
+            .populate('teacher', 'name')
+            .sort({ checkInTime: -1 })
+            .limit(10);
+
+        let activityFeed = [];
+
+        recentShifts.forEach(shift => {
+            activityFeed.push({
+                id: `shift_${shift._id}`,
+                employeeName: shift.employee.name,
+                action: 'Started shift',
+                time: shift.loginTime,
+                status: 'Present',
+                statusColor: 'success'
+            });
+            if (shift.logoutTime) {
+                activityFeed.push({
+                    id: `shift_out_${shift._id}`,
+                    employeeName: shift.employee.name,
+                    action: 'Ended shift',
+                    time: shift.logoutTime,
+                    status: 'Completed',
+                    statusColor: 'default'
+                });
+            }
+        });
+
+        recentAttendances.forEach(att => {
+            activityFeed.push({
+                id: `att_${att._id}`,
+                employeeName: att.teacher.name,
+                action: `Marked attendance (${att.status})`,
+                time: att.checkInTime,
+                status: att.status,
+                statusColor: att.status === 'Late' ? 'warning' : att.status === 'Absent' ? 'danger' : 'success'
+            });
+        });
+
+        activityFeed.sort((a, b) => new Date(b.time) - new Date(a.time));
+        activityFeed = activityFeed.slice(0, 15);
+
+        return res.status(200).json({
+            success: true,
+            stats: {
+                totalEmployees,
+                presentToday: presentTodayCount,
+                noShow: noShowCount,
+                pending: pendingCount
+            },
+            recentActivity: activityFeed
+        });
+
+    } catch (error) {
+        console.error("Dashboard overview error:", error);
+        return res.status(500).json({
+            success: false,
+            message: "Failed to load dashboard overview."
         });
     }
 });
