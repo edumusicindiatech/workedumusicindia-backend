@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 
-const optionalTaskSchema = new mongoose.Schema({
+const TaskSchema = new mongoose.Schema({
     teacher: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User',
@@ -28,4 +28,4 @@ const optionalTaskSchema = new mongoose.Schema({
     }
 }, { timestamps: true });
 
-module.exports = mongoose.model('OptionalTask', optionalTaskSchema);
+module.exports = mongoose.model('OptionalTask', TaskSchema);

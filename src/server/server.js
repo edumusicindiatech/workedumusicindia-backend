@@ -2,12 +2,8 @@ const express = require('express');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
 require('dotenv').config();
-const connectDB = require('../database/config'); // Import your DB function
-const adminRouter = require('../routes/adminRouter');
+const connectDB = require('../database/config');
 const authRouter = require('../routes/authRouter');
-const employeeRouter = require('../routes/employeeRouter');
-const initializeCronJobs = require('../jobs/reportCron');
-initializeCronJobs();
 
 const app = express();
 app.use(cookieParser());
@@ -18,9 +14,7 @@ app.use(cors({
 }));
 app.use(express.json());
 
-app.use('/api/admin', adminRouter);
 app.use('/api/auth', authRouter);
-app.use('/api/employee', employeeRouter);
 
 
 

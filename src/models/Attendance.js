@@ -3,27 +3,27 @@ const mongoose = require('mongoose');
 const attendanceSchema = new mongoose.Schema({
     teacher: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     school: { type: mongoose.Schema.Types.ObjectId, ref: 'School', required: true },
-    date: { type: Date, default: Date.now },
-    status: { type: String, enum: ['Present', 'Late', 'Absent'], required: true },
+    band: { type: String, enum: ['Junior Band', 'Senior Band'], required: true },
+
+    date: { type: String, required: true }, // Format: "YYYY-MM-DD" for easy grouping
+    status: {
+        type: String,
+        enum: ['Present', 'Late', 'Absent', 'Holiday', 'Event'],
+        required: true
+    },
+
+    // Check-in / Check-out specific data
     checkInTime: { type: Date },
     checkOutTime: { type: Date },
-    workDurationMinutes: { type: Number, default: 0 },
-    mediaFiles: [{
-        url: { type: String, required: true },
-        fileType: { type: String, default: 'video' },
-        uploadedAt: { type: Date, default: Date.now },
-        description: { type: String }
-    }],
-    locationVerified: { type: Boolean, default: false },
-    isReviewed: { type: Boolean, default: false },
-    clockInLocation: {
-        type: { type: String, enum: ['Point'], default: 'Point' },
-        coordinates: { type: [Number] }
-    },
-    clockOutLocation: {
-        type: { type: String, enum: ['Point'], default: 'Point' },
-        coordinates: { type: [Number] }
-    }
+    checkInLocationDesc: { type: String },
+    checkInCoordinates: { type: [Number] },
+    checkOutLocationDesc: { type: String },
+    checkOutCoordinates: { type: [Number] },
+
+    // Directly linked to the Daily Record Details UI
+    teacherNote: { type: String }, // e.g., "Heavy traffic on Main St."
+    dailyReport: { type: String }  // e.g., "Conducted Science lab experiments..."
+
 }, { timestamps: true });
 
 module.exports = mongoose.model('Attendance', attendanceSchema);
