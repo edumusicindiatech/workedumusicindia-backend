@@ -45,12 +45,12 @@ authRouter.post('/login', async (req, res) => {
         // Passing user._id (converted to string if necessary) and user.role
         const accessToken = generateAccessToken(user._id, user.role);
         const refreshToken = generateRefreshToken(user._id, user.role);
-
+        const isProduction = process.env.NODE_ENV === 'production';
         // 2. Set secure cookie options for the refresh token
         const cookieOptions = {
             httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: 'none',
+            secure: isProduction,
+            sameSite: isProduction ? 'none' : 'lax',
             maxAge: 7 * 24 * 60 * 60 * 1000
         };
 
@@ -200,10 +200,11 @@ authRouter.get('/refresh-token', async (req, res) => {
 authRouter.post('/logout', async (req, res) => {
     try {
         // Clear the refresh token cookie with the exact same options used to set it
+        const isProduction = process.env.NODE_ENV === 'production';
         res.clearCookie("refreshToken", {
             httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: 'none'
+            secure: isProduction,
+            sameSite: isProduction ? 'none' : 'lax'
         });
 
         return res.status(200).json({
