@@ -4,7 +4,7 @@ const { getShiftNotificationTemplate } = require('../templates/shiftNotification
 const { getSchoolAttendanceTemplate } = require('../templates/schoolAttendanceEmail');
 const { getDailyReportSubmittedTemplate, getMissingReportTemplate } = require('../templates/dailyReportEmails');
 const { getAdminWelcomeEmailTemplate } = require('../templates/adminWelcomeEmail');
-const { getEmployeeWelcomeEmailTemplate } = require('../templates/EmployeeWelcomeEmail');
+const { getEmployeeWelcomeEmailTemplate } = require('../templates/employeeWelcomeEmail');
 
 require('dotenv').config();
 
