@@ -8,6 +8,9 @@ const getEmployeeAssignmentUpdatedTemplate = require('../templates/employeeAssig
 const getAdminAssignmentUpdatedTemplate = require('../templates/adminAssignmentUpdateEmail');
 const getAdminAssignmentRevokedTemplate = require('../templates/adminAssignmentRevokeEmail');
 const getEmployeeAssignmentRevokedTemplate = require('../templates/employeeAssignmentRevokeEmail');
+const getEmployeeProfileUpdatedTemplate = require('../templates/employeeProfileUpdateEmail');
+const getAdminProfileUpdatedTemplate = require('../templates/adminProfileUpdateEmail');
+const getEmployeeProfileDeletedTemplate = require('../templates/employeeProfileDeletedEmail');
 
 require('dotenv').config();
 
@@ -133,6 +136,36 @@ const sendAdminAssignmentRevokedEmail = async (email, adminName, empName, school
     });
 };
 
+const sendEmployeeProfileDeletedEmail = async (email, name) => {
+    await transporter.sendMail({
+        from: process.env.EMAIL_FROM,
+        to: email,
+        subject: "Account Notice: Your WorkForce Pro account was deleted",
+        html: getEmployeeProfileDeletedTemplate(name)
+    });
+};
+
+const sendEmployeeProfileUpdatedEmail = async (email, name) => {
+    await transporter.sendMail({
+        from: process.env.EMAIL_FROM,
+        to: email,
+        subject: "Security Alert: Profile Information Updated",
+        html: getEmployeeProfileUpdatedTemplate(name)
+    });
+};
+
+const sendAdminAuditEmail = async (adminEmail, targetName, changedBy) => {
+    try {
+        // Logic to get the admin's name would be in the loop in your router
+        await transporter.sendMail({
+            from: process.env.EMAIL_FROM,
+            to: adminEmail,
+            subject: `[Audit Log] Profile Updated: ${targetName}`,
+            html: getAdminProfileUpdatedTemplate("Admin", targetName, changedBy)
+        });
+    } catch (e) { console.error(e); }
+};
+
 module.exports = {
     sendAdminWelcomeEmail,
     sendEmployeeWelcomeEmail,
@@ -141,5 +174,8 @@ module.exports = {
     sendEmployeeAssignmentUpdatedEmail,
     sendEmployeeAssignmentRevokedEmail,
     sendAdminAssignmentUpdatedEmail,
-    sendAdminAssignmentRevokedEmail
+    sendAdminAssignmentRevokedEmail,
+    sendEmployeeProfileUpdatedEmail,
+    sendEmployeeProfileDeletedEmail,
+    sendAdminAuditEmail
 };

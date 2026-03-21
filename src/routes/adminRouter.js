@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const validator = require('validator');
 const bcrypt = require('bcrypt');
 const adminRouter = express.Router();
-const { sendAdminWelcomeEmail, sendEmployeeWelcomeEmail, sendSchoolAssignmentEmail, sendAdminAssignmentAlertEmail, sendEmployeeAssignmentRevokedEmail, sendAdminAssignmentRevokedEmail, sendEmployeeAssignmentUpdatedEmail, sendAdminAssignmentUpdatedEmail } = require('../utils/emailService');
+const { sendAdminWelcomeEmail, sendEmployeeWelcomeEmail, sendSchoolAssignmentEmail, sendAdminAssignmentAlertEmail, sendEmployeeAssignmentRevokedEmail, sendAdminAssignmentRevokedEmail, sendEmployeeAssignmentUpdatedEmail, sendAdminAssignmentUpdatedEmail, sendEmployeeProfileUpdatedEmail, sendAdminAuditEmail, sendEmployeeProfileDeletedEmail } = require('../utils/emailService');
 const adminAuth = require('../middleware/adminAuth');
 const userAuth = require('../middleware/userAuth');
 const requireSuperAdmin = require('../middleware/requireSuperAdmin');
@@ -503,5 +503,148 @@ adminRouter.delete('/employees/:empId/assignments/:assignmentId', userAuth, admi
     }
 });
 
+// ==========================================
+// 8. UPDATE EMPLOYEE/ADMIN PROFILE
+// ==========================================
+adminRouter.put('/employees/:id', userAuth, adminAuth, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { name, email, phone, zone, password } = req.body;
+
+        const targetUser = await User.findById(id);
+        if (!targetUser) return res.status(404).json({ success: false, message: "User not found" });
+
+        // 1. Hierarchy Check
+        if (req.user.role === 'Admin' && ['Admin', 'SuperAdmin'].includes(targetUser.role)) {
+            return res.status(403).json({ success: false, message: "Permission denied. Admins cannot edit other administrators." });
+        }
+
+        // 2. Apply Changes
+        if (name) targetUser.name = name;
+        if (email) targetUser.email = email;
+        if (phone) targetUser.mobile = phone;
+        if (zone) targetUser.zone = zone;
+        if (password && password.trim() !== "") {
+            targetUser.password = await bcrypt.hash(password, 10);
+        }
+
+        await targetUser.save();
+
+        // --- NOTIFICATION LOGIC ---
+
+        // A. Notify the Target User (Employee/Admin being updated)
+        const userNotif = await Notification.create({
+            recipient: targetUser._id,
+            title: "Profile Updated",
+            message: `Your profile details were updated by ${req.user.name}.`,
+            type: "System"
+        });
+
+        if (req.io) {
+            req.io.to(targetUser._id.toString()).emit('new_notification', {
+                _id: userNotif._id,
+                title: userNotif.title,
+                message: userNotif.message,
+                timestamp: userNotif.createdAt
+            });
+        }
+        sendEmployeeProfileUpdatedEmail(targetUser.email, targetUser.name).catch(console.error);
+
+        // B. Notify All Other Admins (Audit Log)
+        const admins = await User.find({
+            role: { $in: ['Admin'] },
+            _id: { $ne: req.user._id } // Don't notify the person who made the change
+        });
+
+        await Promise.all(admins.map(async (admin) => {
+            // Save to DB
+            const auditNotif = await Notification.create({
+                recipient: admin._id,
+                title: "Audit: Profile Modified",
+                message: `${req.user.name} updated the profile of ${targetUser.name}.`,
+                type: "System"
+            });
+
+            // Real-time
+            if (req.io) {
+                req.io.to(admin._id.toString()).emit('new_notification', auditNotif);
+            }
+
+            // Email (only if they haven't disabled admin alerts)
+            if (admin.preferences?.adminNotifications !== false) {
+                sendAdminAuditEmail(admin.email, targetUser.name, "UPDATED", req.user.name).catch(console.error);
+            }
+        }));
+
+        const data = await User.findById(id).select('-password').populate('assignments.school');
+        res.status(200).json({ success: true, message: "Profile updated and parties notified.", data });
+
+    } catch (error) {
+        console.error("Update Profile Error:", error);
+        res.status(500).json({ success: false, message: "Server error while updating profile." });
+    }
+});
+
+// ==========================================
+// 9. DELETE EMPLOYEE/ADMIN
+// ==========================================
+adminRouter.delete('/employees/:id', userAuth, adminAuth, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const userToDelete = await User.findById(id);
+
+        if (!userToDelete) return res.status(404).json({ success: false, message: "User not found." });
+
+        // 1. Hierarchy & Security Checks
+        if (userToDelete._id.toString() === req.user._id.toString()) {
+            return res.status(400).json({ success: false, message: "You cannot delete your own account." });
+        }
+        if (userToDelete.role === 'SuperAdmin') {
+            return res.status(403).json({ success: false, message: "SuperAdmin accounts cannot be deleted." });
+        }
+        if (req.user.role === 'Admin' && userToDelete.role === 'Admin') {
+            return res.status(403).json({ success: false, message: "Permission denied. Only SuperAdmins can delete Admin accounts." });
+        }
+
+        const deletedName = userToDelete.name;
+        const deletedEmail = userToDelete.email;
+        // 2. Perform Deletion & Cleanup
+        await User.findByIdAndDelete(id);
+        await Notification.deleteMany({ recipient: id });
+
+        sendEmployeeProfileDeletedEmail(deletedEmail, deletedName).catch(console.error);
+
+        // --- NOTIFICATION LOGIC ---
+
+        // Notify All Other Admins about the account removal
+        const admins = await User.find({
+            role: { $in: ['Admin'] },
+            _id: { $ne: req.user._id }
+        });
+
+        await Promise.all(admins.map(async (admin) => {
+            const deleteNotif = await Notification.create({
+                recipient: admin._id,
+                title: "Security Alert: Account Deleted",
+                message: `The account for ${deletedName} was permanently deleted by ${req.user.name}.`,
+                type: "Warning"
+            });
+
+            if (req.io) {
+                req.io.to(admin._id.toString()).emit('new_notification', deleteNotif);
+            }
+
+            if (admin.preferences?.adminNotifications !== false) {
+                sendAdminAuditEmail(admin.email, deletedName, "DELETED", req.user.name).catch(console.error);
+            }
+        }));
+
+        res.status(200).json({ success: true, message: `${deletedName} deleted. Audit logs sent to administrators.` });
+
+    } catch (error) {
+        console.error("Delete User Error:", error);
+        res.status(500).json({ success: false, message: "Server error while deleting user." });
+    }
+});
 
 module.exports = adminRouter;
