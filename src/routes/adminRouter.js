@@ -4,10 +4,12 @@ const crypto = require('crypto');
 const validator = require('validator');
 const bcrypt = require('bcrypt');
 const adminRouter = express.Router();
-const { sendAdminWelcomeEmail, sendEmployeeWelcomeEmail } = require('../utils/emailService');
+const { sendAdminWelcomeEmail, sendEmployeeWelcomeEmail, sendSchoolAssignmentEmail, sendAdminAssignmentAlertEmail, sendEmployeeAssignmentRevokedEmail, sendAdminAssignmentRevokedEmail, sendEmployeeAssignmentUpdatedEmail, sendAdminAssignmentUpdatedEmail } = require('../utils/emailService');
 const adminAuth = require('../middleware/adminAuth');
 const userAuth = require('../middleware/userAuth');
 const requireSuperAdmin = require('../middleware/requireSuperAdmin');
+const School = require('../models/School');
+const Notification = require('../models/Notification');
 
 
 // ==========================================
@@ -178,7 +180,10 @@ adminRouter.get('/roster', userAuth, adminAuth, async (req, res) => {
 // ==========================================
 adminRouter.get('/employees/:id', userAuth, adminAuth, async (req, res) => {
     try {
-        const employee = await User.findById(req.params.id).select('-password');
+        // THE CRITICAL FIX: .populate() replaces the school ID with the full School object!
+        const employee = await User.findById(req.params.id)
+            .select('-password')
+            .populate('assignments.school');
 
         if (!employee) {
             return res.status(404).json({ success: false, message: "Employee not found." });
@@ -190,5 +195,313 @@ adminRouter.get('/employees/:id', userAuth, adminAuth, async (req, res) => {
         res.status(500).json({ success: false, message: "Server error while fetching employee details." });
     }
 });
+
+// ==========================================
+// 5. ASSIGN SCHOOL TO EMPLOYEE
+// ==========================================
+adminRouter.post('/employees/:id/assign-school', userAuth, adminAuth, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { schoolName, schoolAddress, category, startDate, endDate, startTime, endTime, allowedDays, latitude, longitude } = req.body;
+
+        // 1. Find Employee & Handle School Creation
+        const employee = await User.findById(id);
+        if (!employee) return res.status(404).json({ success: false, message: "Employee not found." });
+
+        let school = await School.findOne({ schoolName: { $regex: new RegExp(`^${schoolName}$`, 'i') } });
+        if (!school) {
+            school = new School({
+                schoolName,
+                address: schoolAddress,
+                location: { type: 'Point', coordinates: [parseFloat(longitude), parseFloat(latitude)] }
+            });
+            await school.save();
+        }
+
+        // 2. Save Assignment to Employee
+        const newAssignment = {
+            school: school._id, category, startDate, endDate: endDate || null, startTime, endTime, allowedDays,
+            geofence: { latitude: parseFloat(latitude), longitude: parseFloat(longitude) }
+        };
+        employee.assignments.push(newAssignment);
+        await employee.save();
+
+        // ==========================================
+        // 3. BACKGROUND NOTIFICATIONS (Fire & Forget)
+        // ==========================================
+
+        // --- A. Notify the Employee ---
+        const empMsg = `You have been assigned to ${school.schoolName} for the ${category} shift starting ${startDate}.`;
+
+        if (employee.preferences?.employeeNotifications !== false) {
+            // NEW: Added school.address here
+            sendSchoolAssignmentEmail(employee.email, employee.name, school.schoolName, school.address, category, startDate, startTime)
+                .catch(e => console.error("Employee email failed", e));
+        }
+
+        // NEW: Save to Database so it stays in their notification history!
+        const empNotification = await Notification.create({
+            recipient: employee._id,
+            title: "New School Assignment",
+            message: empMsg,
+            type: "Assignment"
+        });
+
+        if (req.io) {
+            // Include the ID so the frontend can mark this specific notification as read later
+            req.io.to(employee._id.toString()).emit('new_notification', {
+                _id: empNotification._id,
+                title: empNotification.title,
+                message: empNotification.message,
+                timestamp: empNotification.createdAt
+            });
+        }
+
+        // --- B. Notify All Admins & SuperAdmins ---
+        const admins = await User.find({
+            role: { $in: ['Admin'] },
+            _id: { $ne: req.user._id }
+        });
+
+        const adminMsg = `${employee.name} has been assigned to ${school.schoolName} (${category}).`;
+
+        // Process admins concurrently using Promise.all for better performance
+        await Promise.all(admins.map(async (admin) => {
+            // Email
+            if (admin.preferences?.adminNotifications !== false) {
+                // NEW: Added school.address here
+                sendAdminAssignmentAlertEmail(admin.email, admin.name, employee.name, school.schoolName, school.address, category, startDate)
+                    .catch(e => console.error("Admin email failed", e));
+            }
+
+            // NEW: Save to Database for the Admin
+            const adminNotification = await Notification.create({
+                recipient: admin._id,
+                title: "System Alert: Staff Assigned",
+                message: adminMsg,
+                type: "System"
+            });
+
+            // Socket
+            if (req.io) {
+                req.io.to(admin._id.toString()).emit('new_notification', {
+                    _id: adminNotification._id,
+                    title: adminNotification.title,
+                    message: adminNotification.message,
+                    timestamp: adminNotification.createdAt
+                });
+            }
+        }));
+
+        // 4. Return Success
+        res.status(200).json({ success: true, message: "School successfully assigned.", data: newAssignment });
+
+    } catch (error) {
+        console.error("Assign School Error:", error);
+        res.status(500).json({ success: false, message: "Server error while assigning school." });
+    }
+});
+
+
+// ==========================================
+// 6. UPDATE ASSIGNMENT (WITH DETAILED CHANGE LOG)
+// ==========================================
+adminRouter.put('/employees/:empId/assignments/:assignmentId', userAuth, adminAuth, async (req, res) => {
+    try {
+        const { empId, assignmentId } = req.params;
+        const employee = await User.findById(empId).populate('assignments.school');
+        if (!employee) return res.status(404).json({ success: false, message: "Employee not found" });
+
+        const assignment = employee.assignments.id(assignmentId);
+        if (!assignment) return res.status(404).json({ success: false, message: "Assignment not found" });
+
+        // 1. BUILD THE CHANGE LOG
+        const changes = [];
+        const fieldLabels = {
+            category: "Category",
+            startDate: "Start Date",
+            endDate: "End Date",
+            startTime: "Start Time",
+            endTime: "End Time",
+            allowedDays: "Working Days"
+        };
+
+        // We compare the keys coming in req.body with the current values in the DB
+        Object.keys(req.body).forEach(key => {
+            if (!fieldLabels[key]) return; // Skip fields we don't want to track
+
+            let oldVal = assignment[key];
+            let newVal = req.body[key];
+
+            // Normalize Dates for comparison (YYYY-MM-DD)
+            if (key.includes('Date') && oldVal) {
+                oldVal = new Date(oldVal).toISOString().split('T')[0];
+            }
+
+            // Comparison Logic
+            if (Array.isArray(oldVal)) {
+                // Compare arrays (like allowedDays) by sorting and joining
+                if (oldVal.sort().join(',') !== newVal.sort().join(',')) {
+                    changes.push({
+                        field: fieldLabels[key],
+                        oldValue: oldVal.length > 0 ? oldVal.join(', ') : "None",
+                        newValue: newVal.join(', ')
+                    });
+                }
+            } else if (oldVal !== newVal) {
+                // Standard string/number comparison
+                changes.push({
+                    field: fieldLabels[key],
+                    oldValue: oldVal || 'Not Set',
+                    newValue: newVal || 'Removed'
+                });
+            }
+        });
+
+        // 2. IF NO CHANGES DETECTED, RETURN EARLY
+        if (changes.length === 0) {
+            return res.status(200).json({ success: true, message: "No actual changes were made." });
+        }
+
+        // 3. APPLY UPDATES & SAVE
+        Object.assign(assignment, req.body);
+        await employee.save();
+
+        // 4. BACKGROUND NOTIFICATIONS
+        const changeSummary = changes.map(c => c.field).join(', ');
+        const empMsg = `Your schedule for ${assignment.school.schoolName} was updated (${changeSummary}).`;
+
+        // In-App Notification (Database)
+        const empNotification = await Notification.create({
+            recipient: employee._id,
+            title: "Schedule Updated",
+            message: empMsg,
+            type: "Assignment"
+        });
+
+        // Real-time Socket
+        if (req.io) {
+            req.io.to(employee._id.toString()).emit('new_notification', {
+                _id: empNotification._id,
+                title: "Schedule Updated",
+                message: empMsg,
+                timestamp: new Date()
+            });
+        }
+
+        // Send Detailed Email to Teacher
+        if (employee.preferences?.employeeNotifications !== false) {
+            // Note: Now passing the 'changes' array and the updated 'assignment' object
+            sendEmployeeAssignmentUpdatedEmail(
+                employee.email,
+                employee.name,
+                assignment.school.schoolName,
+                assignment.school.address,
+                changes,
+                assignment
+            ).catch(err => console.error("Employee Detailed Email Error:", err));
+        }
+
+        // 5. NOTIFY OTHER ADMINS
+        const admins = await User.find({
+            role: { $in: ['Admin'] },
+            _id: { $ne: req.user._id }
+        });
+
+        const adminMsg = `${employee.name}'s schedule for ${assignment.school.schoolName} was updated by ${req.user.name}.`;
+
+        await Promise.all(admins.map(async (admin) => {
+            const adminNotif = await Notification.create({
+                recipient: admin._id,
+                title: "System Alert: Schedule Updated",
+                message: adminMsg,
+                type: "System"
+            });
+
+            if (req.io) {
+                req.io.to(admin._id.toString()).emit('new_notification', {
+                    _id: adminNotif._id,
+                    title: adminNotif.title,
+                    message: adminNotif.message,
+                    timestamp: new Date()
+                });
+            }
+
+            if (admin.preferences?.adminNotifications !== false) {
+                sendAdminAssignmentUpdatedEmail(
+                    admin.email,
+                    admin.name,
+                    employee.name,
+                    assignment.school.schoolName,
+                    assignment.school.address,
+                    assignment.category
+                ).catch(err => console.error("Admin Update Email Error:", err));
+            }
+        }));
+
+        res.status(200).json({ success: true, message: "Assignment updated and teacher notified of specific changes." });
+
+    } catch (error) {
+        console.error("Update Assignment Error:", error);
+        res.status(500).json({ success: false, message: "Server error updating assignment." });
+    }
+});
+
+// ==========================================
+// 7. REVOKE/DELETE ASSIGNMENT
+// ==========================================
+adminRouter.delete('/employees/:empId/assignments/:assignmentId', userAuth, adminAuth, async (req, res) => {
+    try {
+        const { empId, assignmentId } = req.params;
+        const employee = await User.findById(empId).populate('assignments.school');
+
+        const assignment = employee.assignments.id(assignmentId);
+        if (!assignment) return res.status(404).json({ success: false, message: "Assignment not found" });
+
+        const schoolName = assignment.school.schoolName;
+        const schoolAddress = assignment.school.address;
+        const category = assignment.category;
+
+        // Remove the assignment
+        employee.assignments.pull(assignmentId);
+        await employee.save();
+
+        // ==========================================
+        // BACKGROUND NOTIFICATIONS
+        // ==========================================
+
+        // --- A. Notify the Employee ---
+        const empMsg = `Your assignment at ${schoolName} has been revoked.`;
+        const empNotification = await Notification.create({ recipient: employee._id, title: "Assignment Revoked", message: empMsg, type: "Warning" });
+
+        if (req.io) {
+            req.io.to(employee._id.toString()).emit('new_notification', { _id: empNotification._id, title: "Assignment Revoked", message: empMsg, timestamp: new Date() });
+        }
+
+        if (employee.preferences?.employeeNotifications !== false) {
+            sendEmployeeAssignmentRevokedEmail(employee.email, employee.name, schoolName, schoolAddress, category).catch(console.error);
+        }
+
+        // --- B. Notify All Admins & SuperAdmins ---
+        const admins = await User.find({ role: { $in: ['Admin'] }, _id: { $ne: req.user._id } });
+        const adminMsg = `${employee.name}'s assignment at ${schoolName} was revoked.`;
+
+        await Promise.all(admins.map(async (admin) => {
+            const adminNotif = await Notification.create({ recipient: admin._id, title: "System Alert: Assignment Revoked", message: adminMsg, type: "System" });
+            if (req.io) {
+                req.io.to(admin._id.toString()).emit('new_notification', { _id: adminNotif._id, title: adminNotif.title, message: adminNotif.message, timestamp: new Date() });
+            }
+            if (admin.preferences?.adminNotifications !== false) {
+                sendAdminAssignmentRevokedEmail(admin.email, admin.name, employee.name, schoolName, schoolAddress, category).catch(console.error);
+            }
+        }));
+
+        res.status(200).json({ success: true, message: "Assignment revoked." });
+    } catch (error) {
+        console.error("Delete Assignment Error:", error);
+        res.status(500).json({ success: false, message: "Server error deleting assignment." });
+    }
+});
+
 
 module.exports = adminRouter;

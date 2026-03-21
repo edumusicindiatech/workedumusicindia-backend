@@ -1,10 +1,13 @@
 const nodemailer = require('nodemailer');
 const User = require('../models/User');
-const { getShiftNotificationTemplate } = require('../templates/shiftNotificationEmail');
-const { getSchoolAttendanceTemplate } = require('../templates/schoolAttendanceEmail');
-const { getDailyReportSubmittedTemplate, getMissingReportTemplate } = require('../templates/dailyReportEmails');
 const { getAdminWelcomeEmailTemplate } = require('../templates/adminWelcomeEmail');
 const { getEmployeeWelcomeEmailTemplate } = require('../templates/employeeWelcomeEmail');
+const getAdminSchoolAssignmentAlertTemplate = require('../templates/adminSchoolAssignmentEmail');
+const { getEmployeeSchoolAssignmentEmailTemplate } = require('../templates/employeeSchoolAssignmentTemplate');
+const getEmployeeAssignmentUpdatedTemplate = require('../templates/employeeAssignmentUpdateEmail');
+const getAdminAssignmentUpdatedTemplate = require('../templates/adminAssignmentUpdateEmail');
+const getAdminAssignmentRevokedTemplate = require('../templates/adminAssignmentRevokeEmail');
+const getEmployeeAssignmentRevokedTemplate = require('../templates/employeeAssignmentRevokeEmail');
 
 require('dotenv').config();
 
@@ -59,192 +62,84 @@ const sendEmployeeWelcomeEmail = async (userEmail, userName, employeeId, plainTe
     }
 };
 
-const sendShiftNotificationToAdmins = async (employee, action, territory, time) => {
+const sendSchoolAssignmentEmail = async (userEmail, userName, schoolName, schoolAddress, category, startDate, startTime) => {
     try {
-        // 1. Fetch all admins from DB
-        const admins = await User.find({
-            role: { $in: ['Admin1', 'Admin2', 'Admin3'] }
-        }).select('email');
-
-        if (admins.length === 0) {
-            console.log("No admins found to notify.");
-            return;
-        }
-
-        // Extract emails and join them (e.g., "admin1@test.com,admin2@test.com")
-        const adminEmails = admins.map(admin => admin.email).join(',');
-
-        // 2. Format the time for the email
-        const formattedTime = new Date(time).toLocaleString('en-IN', {
-            timeZone: 'Asia/Kolkata',
-            dateStyle: 'medium',
-            timeStyle: 'short'
-        });
-
-        // 3. Generate HTML from template
-        const htmlContent = getShiftNotificationTemplate(
-            employee.name,
-            employee.employeeId,
-            action,
-            territory,
-            formattedTime
-        );
-
-        // 4. Configure Mail Options
         const mailOptions = {
-            from: process.env.EMAIL_FROM,
-            to: adminEmails, // Sends to all admins simultaneously
-            subject: `Alert: ${employee.name} - ${action}`,
-            html: htmlContent,
+            from: process.env.EMAIL_FROM || '"WorkForce Pro" <no-reply@workforce.com>',
+            to: userEmail,
+            subject: "New Assignment: " + schoolName,
+            html: getEmployeeSchoolAssignmentEmailTemplate(userName, schoolName, schoolAddress, category, startDate, startTime)
         };
-
-        // 5. Send via Brevo
         await transporter.sendMail(mailOptions);
-        console.log(`Shift notification (${action}) sent to admins for ${employee.name}`);
-
     } catch (error) {
-        console.error("Failed to send shift notification to admins:", error);
+        console.error("Error sending assignment email:", error);
     }
 };
 
-const sendSchoolAttendanceAlert = async (employee, school, action, time, remark = '', highlightLevel = 'success') => {
+const sendAdminAssignmentAlertEmail = async (adminEmail, adminName, employeeName, schoolName, schoolAddress, category, startDate) => {
     try {
-        // 1. Fetch all admins
-        const admins = await User.find({
-            role: { $in: ['Admin1', 'Admin2', 'Admin3'] }
-        }).select('email');
-
-        if (admins.length === 0) return;
-
-        const adminEmails = admins.map(admin => admin.email).join(',');
-
-        // 2. Format the time
-        const formattedTime = new Date(time).toLocaleString('en-IN', {
-            timeZone: 'Asia/Kolkata',
-            dateStyle: 'medium',
-            timeStyle: 'short'
-        });
-
-        // 3. Generate HTML
-        const htmlContent = getSchoolAttendanceTemplate(
-            employee.name,
-            school.schoolName,
-            action,
-            formattedTime,
-            remark,
-            highlightLevel
-        );
-
-        // 4. Configure Subject Line based on severity
-        let subjectPrefix = '';
-        if (highlightLevel === 'danger') subjectPrefix = '🚨 LATE ALERT: ';
-        if (highlightLevel === 'warning') subjectPrefix = '⏱️ EXTENDED VISIT: ';
-
         const mailOptions = {
-            from: process.env.EMAIL_FROM,
-            to: adminEmails,
-            subject: `${subjectPrefix}${employee.name} - ${action} at ${school.schoolName}`,
-            html: htmlContent,
+            from: process.env.EMAIL_FROM || '"WorkForce Pro" <no-reply@workforce.com>',
+            to: adminEmail,
+            subject: `[Admin Alert] ${employeeName} Assigned to ${schoolName}`,
+            html: getAdminSchoolAssignmentAlertTemplate(adminName, employeeName, schoolName, schoolAddress, category, startDate)
         };
-
-        // 5. Send Email
         await transporter.sendMail(mailOptions);
-        console.log(`School ${action} alert sent for ${employee.name}`);
-
     } catch (error) {
-        console.error("Failed to send school attendance alert:", error);
+        console.error("Error sending admin alert email:", error);
     }
 };
 
-const sendTaskUpdateAlert = async (employee, school, action, rejectReason = "") => {
+const sendEmployeeAssignmentUpdatedEmail = async (email, name, schoolName, schoolAdress, changes, assignment) => {
     try {
-        const admins = await User.find({ role: { $in: ['Admin1', 'Admin2', 'Admin3'] } }).select('email');
-        if (!admins.length) return;
-
-        const adminEmails = admins.map(a => a.email).join(',');
-        const htmlContent = getTaskUpdateTemplate(employee.name, school.schoolName, action, rejectReason);
-
         const mailOptions = {
-            from: process.env.EMAIL_FROM,
-            to: adminEmails,
-            subject: `Task ${action}: ${employee.name} at ${school.schoolName}`,
-            html: htmlContent,
+            from: process.env.EMAIL_FROM, // Using the unified mailFrom we set up earlier
+            to: email,
+            subject: `⚠️ Schedule Update: ${schoolName}`,
+            // We pass the raw changes array and the assignment object to the template
+            html: getEmployeeAssignmentUpdatedTemplate(name, schoolName, schoolAdress, changes, assignment)
         };
 
         await transporter.sendMail(mailOptions);
-        console.log(`Task ${action} alert sent to admins for ${employee.name}`);
     } catch (error) {
-        console.error("Failed to send task update alert:", error);
+        console.error("Error in sendEmployeeAssignmentUpdatedEmail:", error);
     }
 };
 
-const sendDailyReportAlert = async (employee, report) => {
-    try {
-        const admins = await User.find({ role: { $in: ['Admin1', 'Admin2', 'Admin3'] } }).select('email');
-        if (!admins.length) return;
-
-        const adminEmails = admins.map(a => a.email).join(',');
-
-        const formattedDate = new Date(report.date).toLocaleDateString('en-IN', {
-            timeZone: 'Asia/Kolkata', dateStyle: 'long'
-        });
-
-        const htmlContent = getDailyReportSubmittedTemplate(
-            employee.name,
-            formattedDate,
-            report.category,
-            report.summary,
-            report.actionItems,
-            report.location
-        );
-
-        const mailOptions = {
-            from: process.env.EMAIL_FROM,
-            to: adminEmails,
-            subject: `Daily Report: ${employee.name} - ${formattedDate}`,
-            html: htmlContent,
-        };
-
-        await transporter.sendMail(mailOptions);
-        console.log(`Daily report alert sent to admins for ${employee.name}`);
-    } catch (error) {
-        console.error("Failed to send daily report alert:", error);
-    }
+const sendEmployeeAssignmentRevokedEmail = async (email, name, schoolName, schoolAddress, category) => {
+    await transporter.sendMail({
+        from: process.env.EMAIL_FROM, // Fixed: Added explicit from address
+        to: email,
+        subject: `Assignment Canceled: ${schoolName}`,
+        html: getEmployeeAssignmentRevokedTemplate(name, schoolName, schoolAddress, category)
+    });
 };
 
-const sendMissingReportAlert = async (employee) => {
-    try {
-        // Fetch admins to CC them on the warning
-        const admins = await User.find({ role: { $in: ['Admin1', 'Admin2', 'Admin3'] } }).select('email');
-        const adminEmails = admins.map(a => a.email).join(',');
+const sendAdminAssignmentUpdatedEmail = async (email, adminName, empName, schoolName, schoolAddress, category) => {
+    await transporter.sendMail({
+        from: process.env.EMAIL_FROM, // Fixed: Added explicit from address
+        to: email,
+        subject: `[Audit] Schedule Updated: ${empName}`,
+        html: getAdminAssignmentUpdatedTemplate(adminName, empName, schoolName, schoolAddress, category)
+    });
+};
 
-        const todayStr = new Date().toLocaleDateString('en-IN', {
-            timeZone: 'Asia/Kolkata', dateStyle: 'long'
-        });
-
-        const htmlContent = getMissingReportTemplate(employee.name, todayStr);
-
-        const mailOptions = {
-            from: process.env.EMAIL_FROM,
-            to: employee.email, // Send directly to the teacher
-            cc: adminEmails,    // Copy the admins so they know it was missed
-            subject: `🚨 Missing Daily Report - ${todayStr}`,
-            html: htmlContent,
-        };
-
-        await transporter.sendMail(mailOptions);
-        console.log(`Missing report warning sent to ${employee.email} and Admins.`);
-    } catch (error) {
-        console.error("Failed to send missing report warning:", error);
-    }
+const sendAdminAssignmentRevokedEmail = async (email, adminName, empName, schoolName, schoolAddress, category) => {
+    await transporter.sendMail({
+        from: process.env.EMAIL_FROM, // Fixed: Added explicit from address
+        to: email,
+        subject: `[Audit] Assignment Revoked: ${empName}`,
+        html: getAdminAssignmentRevokedTemplate(adminName, empName, schoolName, schoolAddress, category)
+    });
 };
 
 module.exports = {
     sendAdminWelcomeEmail,
     sendEmployeeWelcomeEmail,
-    sendShiftNotificationToAdmins,
-    sendSchoolAttendanceAlert,
-    sendTaskUpdateAlert,
-    sendDailyReportAlert,
-    sendMissingReportAlert
+    sendSchoolAssignmentEmail,
+    sendAdminAssignmentAlertEmail,
+    sendEmployeeAssignmentUpdatedEmail,
+    sendEmployeeAssignmentRevokedEmail,
+    sendAdminAssignmentUpdatedEmail,
+    sendAdminAssignmentRevokedEmail
 };
