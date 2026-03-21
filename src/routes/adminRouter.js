@@ -143,5 +143,52 @@ adminRouter.post('/create-employee', userAuth, adminAuth, async (req, res) => {
     }
 });
 
+// ==========================================
+// 3. GET EMPLOYEE ROSTER
+// ==========================================
+adminRouter.get('/roster', userAuth, adminAuth, async (req, res) => {
+    try {
+        // Fetch users who have the system role of 'Employee'
+        // We use .select() to only grab the fields we need, making the API super fast
+        const employees = await User.find({ role: 'Employee' })
+            .select('_id name designation zone')
+            .sort({ createdAt: -1 }); // Newest employees first
+
+        // Map the database fields to exactly match what your React frontend expects
+        const formattedRoster = employees.map(emp => ({
+            id: emp._id,
+            name: emp.name,
+            role: emp.designation || 'Unassigned', // Maps to the UI "Role" column
+            location: emp.zone || 'Unassigned',    // Maps to the UI "Location" column
+        }));
+
+        res.status(200).json({
+            success: true,
+            data: formattedRoster
+        });
+
+    } catch (error) {
+        console.error("Fetch Roster Error:", error);
+        res.status(500).json({ success: false, message: "Server error while fetching roster." });
+    }
+});
+
+// ==========================================
+// 4. GET SINGLE EMPLOYEE PROFILE
+// ==========================================
+adminRouter.get('/employees/:id', userAuth, adminAuth, async (req, res) => {
+    try {
+        const employee = await User.findById(req.params.id).select('-password');
+
+        if (!employee) {
+            return res.status(404).json({ success: false, message: "Employee not found." });
+        }
+
+        res.status(200).json({ success: true, data: employee });
+    } catch (error) {
+        console.error("Fetch Employee Error:", error);
+        res.status(500).json({ success: false, message: "Server error while fetching employee details." });
+    }
+});
 
 module.exports = adminRouter;

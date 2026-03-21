@@ -6,6 +6,49 @@ const Attendance = require('../models/Attendance');
 const User = require('../models/User');
 const employeeRouter = express.Router();
 
+
+// ==========================================
+// GET CURRENT USER PROFILE (Redux Hydration)
+// ==========================================
+// Matches frontend: api.get('/employee/me/profile')
+employeeRouter.get('/me/profile', userAuth, async (req, res) => {
+    try {
+        // req.user._id is automatically provided by your userAuth middleware
+        const user = await User.findById(req.user._id).select('-password');
+
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                message: "User account no longer exists."
+            });
+        }
+
+        // Return the exact object structure your Redux store expects
+        res.status(200).json({
+            success: true,
+            user: {
+                id: user._id,
+                name: user.name,
+                email: user.email,
+                employeeId: user.employeeId,
+                role: user.role,
+                designation: user.designation,
+                mobile: user.mobile,
+                zone: user.zone,
+                isFirstLogin: user.isFirstLogin,
+                preferences: user.preferences
+            }
+        });
+
+    } catch (error) {
+        console.error("Profile Fetch Error:", error);
+        res.status(500).json({
+            success: false,
+            message: "Server error while fetching profile data."
+        });
+    }
+});
+
 // GET: Reverse Geocode Proxy (Bypasses CORS for the frontend)
 employeeRouter.get('/get-city', userAuth, async (req, res) => {
     try {
@@ -282,13 +325,13 @@ employeeRouter.get('/my-schedule', userAuth, async (req, res) => {
         // 3. Fetch User with populated School details
         const user = await User.findById(employeeId).populate({
             path: 'assignments.school',
-            select: 'schoolName address location' 
+            select: 'schoolName address location'
         });
 
         if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
         // 4. Filter for today's assigned schools only
-        const todaysAssignments = user.assignments.filter(a => 
+        const todaysAssignments = user.assignments.filter(a =>
             a.allowedDays.includes(todayDayOfWeek)
         );
 
@@ -300,10 +343,10 @@ employeeRouter.get('/my-schedule', userAuth, async (req, res) => {
 
         // 6. Process Assignments into Dashboard Cards
         const processedVisits = await Promise.all(todaysAssignments.map(async (assignment) => {
-            
+
             // Check if a log exists for this specific school + category
-            const log = todaysLogs.find(l => 
-                l.school.toString() === assignment.school._id.toString() && 
+            const log = todaysLogs.find(l =>
+                l.school.toString() === assignment.school._id.toString() &&
                 l.band === assignment.category
             );
 
@@ -321,7 +364,7 @@ employeeRouter.get('/my-schedule', userAuth, async (req, res) => {
                         }
                     }
                 ]);
-                
+
                 if (distanceInMeters.length > 0) {
                     const km = distanceInMeters[0].dist / 1000;
                     distanceStr = `${km.toFixed(1)} km`;

@@ -22,8 +22,8 @@ const userSchema = new mongoose.Schema({
     isFirstLogin: { type: Boolean, default: true },
     mobile: { type: String },
     role: { type: String, enum: ['SuperAdmin', 'Admin', 'Employee'], default: 'Employee' },
-    designation: { type: String, default: 'Unassigned' },
-    zone: { type: String }, // e.g., "Zone A", "Sultanpur" - Used for Broadcast targeting
+    designation: { type: String, default: 'Teacher' },
+    zone: { type: String}, // e.g., "Zone A", "Sultanpur" - Used for Broadcast targeting
 
     assignments: [assignmentSchema], // Embedded array for their specific schedules
 
