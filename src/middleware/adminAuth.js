@@ -8,16 +8,10 @@ const adminAuth = async (req, res, next) => {
             });
         }
 
-        // Define allowed admin roles (matching your DB schema and frontend logic)
-        const adminRoles = ['Admin1', 'Admin2', 'Admin3', 'admin'];
-
-        if (!adminRoles.includes(req.user.role)) {
-            return res.status(403).json({
-                success: false,
-                message: "Access Denied: Administrator privileges required."
-            });
+        if (!['Admin', 'SuperAdmin'].includes(req.user.role)) {
+            return res.status(403).json({ success: false, message: "Access denied. Admin privileges required." });
         }
-
+        
         next();
     } catch (error) {
         console.error('Admin Auth Error:', error);

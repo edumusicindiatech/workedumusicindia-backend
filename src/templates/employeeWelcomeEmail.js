@@ -5,7 +5,7 @@
  * @param {string} plainTextPassword - The temporary password
  * @returns {string} - The complete HTML string
  */
-const getWelcomeEmailTemplate = (userName, employeeId, plainTextPassword) => {
+const getEmployeeWelcomeEmailTemplate = (userName, employeeId, plainTextPassword) => {
     return `
         <!DOCTYPE html>
         <html>
@@ -46,5 +46,5 @@ const getWelcomeEmailTemplate = (userName, employeeId, plainTextPassword) => {
 };
 
 module.exports = {
-    getWelcomeEmailTemplate
+    getEmployeeWelcomeEmailTemplate
 };

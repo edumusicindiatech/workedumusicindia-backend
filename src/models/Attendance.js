@@ -14,7 +14,11 @@ const attendanceSchema = new mongoose.Schema({
 
     // Check-in / Check-out specific data
     checkInTime: { type: Date },
+    lateReason: { type: String },
+    eventNote: { type: String },
+    eventDate: { type: Date },
     checkOutTime: { type: Date },
+    overtimeReason: { type: String },
     checkInLocationDesc: { type: String },
     checkInCoordinates: { type: [Number] },
     checkOutLocationDesc: { type: String },

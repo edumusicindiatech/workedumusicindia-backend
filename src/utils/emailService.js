@@ -1,9 +1,11 @@
 const nodemailer = require('nodemailer');
-const { getWelcomeEmailTemplate } = require('../templates/welcomeEmail'); // IMPORT THE TEMPLATE
 const User = require('../models/User');
 const { getShiftNotificationTemplate } = require('../templates/shiftNotificationEmail');
 const { getSchoolAttendanceTemplate } = require('../templates/schoolAttendanceEmail');
 const { getDailyReportSubmittedTemplate, getMissingReportTemplate } = require('../templates/dailyReportEmails');
+const { getAdminWelcomeEmailTemplate } = require('../templates/adminWelcomeEmail');
+const { getEmployeeWelcomeEmailTemplate } = require('../templates/EmployeeWelcomeEmail');
+
 require('dotenv').config();
 
 const transporter = nodemailer.createTransport({
@@ -16,10 +18,30 @@ const transporter = nodemailer.createTransport({
     },
 });
 
-const sendWelcomeEmail = async (userEmail, userName, employeeId, plainTextPassword) => {
+const sendAdminWelcomeEmail = async (userEmail, adminName, adminId, plainTextPassword) => {
+    try {
+        const htmlContent = getAdminWelcomeEmailTemplate(adminName, adminId, plainTextPassword);
+
+        const mailOptions = {
+            from: process.env.EMAIL_FROM,
+            to: userEmail,
+            subject: "Admin Access Granted: Your WorkForce Pro Credentials",
+            html: htmlContent,
+        };
+
+        await transporter.sendMail(mailOptions);
+        console.log(`Admin welcome email sent successfully to ${userEmail}`);
+        return true;
+    } catch (error) {
+        console.error(`Failed to send Admin email to ${userEmail}:`, error);
+        return false;
+    }
+};
+
+const sendEmployeeWelcomeEmail = async (userEmail, userName, employeeId, plainTextPassword) => {
     try {
         // Generate the HTML by calling the imported function
-        const htmlContent = getWelcomeEmailTemplate(userName, employeeId, plainTextPassword);
+        const htmlContent = getEmployeeWelcomeEmailTemplate(userName, employeeId, plainTextPassword);
 
         const mailOptions = {
             from: process.env.EMAIL_FROM,
@@ -218,7 +240,8 @@ const sendMissingReportAlert = async (employee) => {
 };
 
 module.exports = {
-    sendWelcomeEmail,
+    sendAdminWelcomeEmail,
+    sendEmployeeWelcomeEmail,
     sendShiftNotificationToAdmins,
     sendSchoolAttendanceAlert,
     sendTaskUpdateAlert,

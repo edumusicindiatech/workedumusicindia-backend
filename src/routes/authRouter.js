@@ -92,53 +92,64 @@ authRouter.post('/login', async (req, res) => {
     }
 });
 
+// ==========================================
+// RESET INITIAL PASSWORD (For both Admins & Employees)
+// ==========================================
 authRouter.post('/reset-initial-password', userAuth, async (req, res) => {
     try {
         const { newPassword } = req.body;
 
         if (!newPassword) {
-            return res.status(400).json(
-                {
-                    success: false,
-                    message: "New password is required"
-                }
-            );
+            return res.status(400).json({ success: false, message: "New password is required." });
         }
 
-        const user = await User.findById(req.user._id);
-
-        if (!user.isFirstLogin) {
-            return res.status(400).json(
-                {
-                    success: false,
-                    message: "Password has already been reset"
-                }
-            );
-        }
+        // 1. Enforce Strong Passwords
         if (!validator.isStrongPassword(newPassword)) {
-            return res.status(400).json(
-                {
-                    success: false,
-                    message: "Enter Strong Password"
-                }
-            )
+            return res.status(400).json({
+                success: false,
+                message: "Password must contain at least 8 characters, 1 uppercase, 1 lowercase, 1 number, and 1 symbol."
+            });
         }
-        // Hash the new password (assuming your model has a pre-save hook, otherwise hash it here)
-        user.password = await bcrypt.hash(newPassword, 10);
+
+        // 2. Fetch the User (We need .select('+password') so we can compare the old one)
+        const user = await User.findById(req.user._id).select('+password');
+
+        if (!user) {
+            return res.status(404).json({ success: false, message: "User not found." });
+        }
+
+        // 3. Prevent abuse (Don't let them reset if they already did)
+        if (!user.isFirstLogin) {
+            return res.status(400).json({ success: false, message: "Password has already been reset." });
+        }
+
+        // 4. Ensure the new password isn't the temporary one!
+        const isSameAsOld = await bcrypt.compare(newPassword, user.password);
+        if (isSameAsOld) {
+            return res.status(400).json({
+                success: false,
+                message: "Your new password must be different from the temporary password."
+            });
+        }
+
+        // 5. Manually Hash the new password
+        const saltRounds = 10;
+        user.password = await bcrypt.hash(newPassword, saltRounds);
+
+        // 6. Flip the flag so they are officially onboarded
         user.isFirstLogin = false;
 
         await user.save();
 
-        return res.status(200).json(
-            {
-                success: true,
-                message: "Password updated successfully"
-            }
-        );
+        return res.status(200).json({
+            success: true,
+            message: "Password updated successfully! Welcome to the system.",
+            role: user.role // We return the role so the React frontend knows where to redirect them!
+        });
 
     } catch (error) {
-        console.log('Error in updaing first time Password', error);
-        res.status(500).json({ message: "Server error during password reset", error: error.message });
+        console.error('Error resetting initial password:', error);
+        res.status(500).json({ success: false, message: "Server error during password reset." });
     }
 });
 
