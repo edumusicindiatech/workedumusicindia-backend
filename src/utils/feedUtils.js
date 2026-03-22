@@ -23,12 +23,20 @@ const fetchDailyFeedData = async (status) => {
     let combinedFeed = [...actualAttendance];
 
     assignedUsers.forEach(user => {
+        if (!user.assignments) return; // Failsafe
+
         user.assignments.forEach(assign => {
+            // FIX: Skip this assignment if the referenced school was deleted from DB
+            if (!assign.school || !assign.school._id) return;
+
             // Only process assignments meant for today
             if (assign.allowedDays.includes(currentDayName)) {
 
                 // Check if this specific assignment (Teacher + School + Category) has a check-in
                 const hasStarted = actualAttendance.find(a =>
+                    // FIX: Ensure both teacher and school objects exist on the attendance record before checking _id
+                    a.teacher && a.teacher._id &&
+                    a.school && a.school._id &&
                     a.teacher._id.toString() === user._id.toString() &&
                     a.school._id.toString() === assign.school._id.toString() &&
                     a.band === assign.category

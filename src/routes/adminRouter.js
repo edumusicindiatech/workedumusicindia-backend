@@ -22,12 +22,10 @@ adminRouter.post('/create-admin', userAuth, requireSuperAdmin, async (req, res) 
     try {
         const { name, email, mobile, employeeId, password } = req.body;
 
-        // 1. Basic empty field check
         if (!name || !email || !employeeId || !password) {
             return res.status(400).json({ success: false, message: "All required fields must be provided." });
         }
 
-        // 2. VALIDATOR CHECKS <-- Added Here
         if (!validator.isEmail(email)) {
             return res.status(400).json({ success: false, message: "Please enter a valid email address." });
         }
@@ -38,21 +36,18 @@ adminRouter.post('/create-admin', userAuth, requireSuperAdmin, async (req, res) 
             });
         }
 
-        // 3. Check for existing users
         const existingUser = await User.findOne({ $or: [{ email }, { employeeId }] });
         if (existingUser) {
             return res.status(400).json({ success: false, message: "Email or Admin ID already in use." });
         }
 
-        // 4. Hash Password
         const saltRounds = 10;
         const hashedPassword = await bcrypt.hash(password, saltRounds);
 
-        // 4. CLEAN UPSERT LOGIC
         const adminUser = await User.findOneAndUpdate(
-            { email: email }, // Search criteria
+            { email: email },
             {
-                $set: {       // Data to update or insert
+                $set: {
                     name,
                     mobile,
                     employeeId,
@@ -63,14 +58,13 @@ adminRouter.post('/create-admin', userAuth, requireSuperAdmin, async (req, res) 
                 }
             },
             {
-                new: true,                  // Return the updated document
-                upsert: true,               // Create if it doesn't exist
-                runValidators: true,        // Run schema validations
-                setDefaultsOnInsert: true   // Apply default values (like isActive: true) if creating new
+                new: true,
+                upsert: true,
+                runValidators: true,
+                setDefaultsOnInsert: true
             }
         );
 
-        // 5. Send Email
         const emailSent = await sendAdminWelcomeEmail(email, name, employeeId, password);
         if (!emailSent) console.warn(`Failed to send welcome email to ${email}`);
 
@@ -91,10 +85,8 @@ adminRouter.post('/create-admin', userAuth, requireSuperAdmin, async (req, res) 
 // ==========================================
 adminRouter.post('/create-employee', userAuth, adminAuth, async (req, res) => {
     try {
-        // Matches the 4 fields from your Add New Employee UI (image_fbf40b.png)
         const { name, email, mobile, designation, zone } = req.body;
 
-        // 1. Validation
         if (!name || !email || !mobile) {
             return res.status(400).json({ success: false, message: "All fields are mandatory." });
         }
@@ -102,18 +94,16 @@ adminRouter.post('/create-employee', userAuth, adminAuth, async (req, res) => {
             return res.status(400).json({ success: false, message: "Please enter a valid email address." });
         }
 
-        // 2. Auto-Generate Credentials
         const currentYear = new Date().getFullYear();
         const randomNum = Math.floor(1000 + Math.random() * 9000);
         const generatedEmployeeId = `EMP-${currentYear}-${randomNum}`;
         const defaultPassword = "Welcome123!";
         const hashedDefaultPassword = await bcrypt.hash(defaultPassword, 10);
 
-        // 3. CLEAN UPSERT LOGIC
         const employeeUser = await User.findOneAndUpdate(
-            { email: email }, // Search criteria
+            { email: email },
             {
-                $set: {       // Data to update or insert
+                $set: {
                     name,
                     mobile,
                     designation,
@@ -132,7 +122,6 @@ adminRouter.post('/create-employee', userAuth, adminAuth, async (req, res) => {
             }
         );
 
-        // 4. Send Email
         const emailSent = await sendEmployeeWelcomeEmail(email, name, generatedEmployeeId, defaultPassword);
         if (!emailSent) console.warn(`Failed to send welcome email to ${email}`);
 
@@ -183,24 +172,19 @@ adminRouter.get('/employees/:id', userAuth, adminAuth, async (req, res) => {
     try {
         const { id } = req.params;
 
-        // 1. Fetch the Employee
         const employee = await User.findById(id);
         if (!employee) return res.status(404).json({ success: false, message: "Employee not found." });
 
-        // 2. Fetch their Tasks
         const tasks = await Task.find({ teacher: id }).populate('school', 'schoolName address');
 
-        // 3. FETCH THEIR WARNINGS (This is the missing piece!)
-        // Make sure to require Warning at the top of your file if you haven't!
         const warnings = await Warning.find({ teacher: id })
             .populate('issuedBy', 'name')
-            .sort({ dateIssued: -1 }); // Sorts newest first
+            .sort({ dateIssued: -1 });
 
-        // 4. Combine everything into one object for the frontend
         const responseData = {
             ...employee.toObject(),
             tasks: tasks,
-            warnings: warnings // <--- This sends it to your WarningsTab!
+            warnings: warnings
         };
 
         res.status(200).json({ success: true, data: responseData });
@@ -210,6 +194,7 @@ adminRouter.get('/employees/:id', userAuth, adminAuth, async (req, res) => {
         res.status(500).json({ success: false, message: "Server error fetching employee." });
     }
 });
+
 // ==========================================
 // 5. ASSIGN SCHOOL TO EMPLOYEE
 // ==========================================
@@ -218,7 +203,6 @@ adminRouter.post('/employees/:id/assign-school', userAuth, adminAuth, async (req
         const { id } = req.params;
         const { schoolName, schoolAddress, category, startDate, endDate, startTime, endTime, allowedDays, latitude, longitude } = req.body;
 
-        // 1. Find Employee & Handle School Creation
         const employee = await User.findById(id);
         if (!employee) return res.status(404).json({ success: false, message: "Employee not found." });
 
@@ -232,7 +216,6 @@ adminRouter.post('/employees/:id/assign-school', userAuth, adminAuth, async (req
             await school.save();
         }
 
-        // 2. Save Assignment to Employee
         const newAssignment = {
             school: school._id, category, startDate, endDate: endDate || null, startTime, endTime, allowedDays,
             geofence: { latitude: parseFloat(latitude), longitude: parseFloat(longitude) }
@@ -240,20 +223,13 @@ adminRouter.post('/employees/:id/assign-school', userAuth, adminAuth, async (req
         employee.assignments.push(newAssignment);
         await employee.save();
 
-        // ==========================================
-        // 3. BACKGROUND NOTIFICATIONS (Fire & Forget)
-        // ==========================================
-
-        // --- A. Notify the Employee ---
         const empMsg = `You have been assigned to ${school.schoolName} for the ${category} shift starting ${startDate}.`;
 
         if (employee.preferences?.employeeNotifications !== false) {
-            // NEW: Added school.address here
             sendSchoolAssignmentEmail(employee.email, employee.name, school.schoolName, school.address, category, startDate, startTime)
                 .catch(e => console.error("Employee email failed", e));
         }
 
-        // NEW: Save to Database so it stays in their notification history!
         const empNotification = await Notification.create({
             recipient: employee._id,
             title: "New School Assignment",
@@ -262,7 +238,6 @@ adminRouter.post('/employees/:id/assign-school', userAuth, adminAuth, async (req
         });
 
         if (req.io) {
-            // Include the ID so the frontend can mark this specific notification as read later
             req.io.to(employee._id.toString()).emit('new_notification', {
                 _id: empNotification._id,
                 title: empNotification.title,
@@ -271,7 +246,6 @@ adminRouter.post('/employees/:id/assign-school', userAuth, adminAuth, async (req
             });
         }
 
-        // --- B. Notify All Admins & SuperAdmins ---
         const admins = await User.find({
             role: { $in: ['Admin'] },
             _id: { $ne: req.user._id }
@@ -279,16 +253,12 @@ adminRouter.post('/employees/:id/assign-school', userAuth, adminAuth, async (req
 
         const adminMsg = `${employee.name} has been assigned to ${school.schoolName} (${category}).`;
 
-        // Process admins concurrently using Promise.all for better performance
         await Promise.all(admins.map(async (admin) => {
-            // Email
             if (admin.preferences?.adminNotifications !== false) {
-                // NEW: Added school.address here
                 sendAdminAssignmentAlertEmail(admin.email, admin.name, employee.name, school.schoolName, school.address, category, startDate)
                     .catch(e => console.error("Admin email failed", e));
             }
 
-            // NEW: Save to Database for the Admin
             const adminNotification = await Notification.create({
                 recipient: admin._id,
                 title: "System Alert: Staff Assigned",
@@ -296,7 +266,6 @@ adminRouter.post('/employees/:id/assign-school', userAuth, adminAuth, async (req
                 type: "System"
             });
 
-            // Socket
             if (req.io) {
                 req.io.to(admin._id.toString()).emit('new_notification', {
                     _id: adminNotification._id,
@@ -307,7 +276,6 @@ adminRouter.post('/employees/:id/assign-school', userAuth, adminAuth, async (req
             }
         }));
 
-        // 4. Return Success
         res.status(200).json({ success: true, message: "School successfully assigned.", data: newAssignment });
 
     } catch (error) {
@@ -329,7 +297,6 @@ adminRouter.put('/employees/:empId/assignments/:assignmentId', userAuth, adminAu
         const assignment = employee.assignments.id(assignmentId);
         if (!assignment) return res.status(404).json({ success: false, message: "Assignment not found" });
 
-        // 1. BUILD THE CHANGE LOG
         const changes = [];
         const fieldLabels = {
             category: "Category",
@@ -340,21 +307,17 @@ adminRouter.put('/employees/:empId/assignments/:assignmentId', userAuth, adminAu
             allowedDays: "Working Days"
         };
 
-        // We compare the keys coming in req.body with the current values in the DB
         Object.keys(req.body).forEach(key => {
-            if (!fieldLabels[key]) return; // Skip fields we don't want to track
+            if (!fieldLabels[key]) return;
 
             let oldVal = assignment[key];
             let newVal = req.body[key];
 
-            // Normalize Dates for comparison (YYYY-MM-DD)
             if (key.includes('Date') && oldVal) {
                 oldVal = new Date(oldVal).toISOString().split('T')[0];
             }
 
-            // Comparison Logic
             if (Array.isArray(oldVal)) {
-                // Compare arrays (like allowedDays) by sorting and joining
                 if (oldVal.sort().join(',') !== newVal.sort().join(',')) {
                     changes.push({
                         field: fieldLabels[key],
@@ -363,7 +326,6 @@ adminRouter.put('/employees/:empId/assignments/:assignmentId', userAuth, adminAu
                     });
                 }
             } else if (oldVal !== newVal) {
-                // Standard string/number comparison
                 changes.push({
                     field: fieldLabels[key],
                     oldValue: oldVal || 'Not Set',
@@ -372,20 +334,16 @@ adminRouter.put('/employees/:empId/assignments/:assignmentId', userAuth, adminAu
             }
         });
 
-        // 2. IF NO CHANGES DETECTED, RETURN EARLY
         if (changes.length === 0) {
             return res.status(200).json({ success: true, message: "No actual changes were made." });
         }
 
-        // 3. APPLY UPDATES & SAVE
         Object.assign(assignment, req.body);
         await employee.save();
 
-        // 4. BACKGROUND NOTIFICATIONS
         const changeSummary = changes.map(c => c.field).join(', ');
         const empMsg = `Your schedule for ${assignment.school.schoolName} was updated (${changeSummary}).`;
 
-        // In-App Notification (Database)
         const empNotification = await Notification.create({
             recipient: employee._id,
             title: "Schedule Updated",
@@ -393,7 +351,6 @@ adminRouter.put('/employees/:empId/assignments/:assignmentId', userAuth, adminAu
             type: "Assignment"
         });
 
-        // Real-time Socket
         if (req.io) {
             req.io.to(employee._id.toString()).emit('new_notification', {
                 _id: empNotification._id,
@@ -403,9 +360,7 @@ adminRouter.put('/employees/:empId/assignments/:assignmentId', userAuth, adminAu
             });
         }
 
-        // Send Detailed Email to Teacher
         if (employee.preferences?.employeeNotifications !== false) {
-            // Note: Now passing the 'changes' array and the updated 'assignment' object
             sendEmployeeAssignmentUpdatedEmail(
                 employee.email,
                 employee.name,
@@ -416,7 +371,6 @@ adminRouter.put('/employees/:empId/assignments/:assignmentId', userAuth, adminAu
             ).catch(err => console.error("Employee Detailed Email Error:", err));
         }
 
-        // 5. NOTIFY OTHER ADMINS
         const admins = await User.find({
             role: { $in: ['Admin'] },
             _id: { $ne: req.user._id }
@@ -476,15 +430,9 @@ adminRouter.delete('/employees/:empId/assignments/:assignmentId', userAuth, admi
         const schoolAddress = assignment.school.address;
         const category = assignment.category;
 
-        // Remove the assignment
         employee.assignments.pull(assignmentId);
         await employee.save();
 
-        // ==========================================
-        // BACKGROUND NOTIFICATIONS
-        // ==========================================
-
-        // --- A. Notify the Employee ---
         const empMsg = `Your assignment at ${schoolName} has been revoked.`;
         const empNotification = await Notification.create({ recipient: employee._id, title: "Assignment Revoked", message: empMsg, type: "Warning" });
 
@@ -496,7 +444,6 @@ adminRouter.delete('/employees/:empId/assignments/:assignmentId', userAuth, admi
             sendEmployeeAssignmentRevokedEmail(employee.email, employee.name, schoolName, schoolAddress, category).catch(console.error);
         }
 
-        // --- B. Notify All Admins & SuperAdmins ---
         const admins = await User.find({ role: { $in: ['Admin'] }, _id: { $ne: req.user._id } });
         const adminMsg = `${employee.name}'s assignment at ${schoolName} was revoked.`;
 
@@ -528,12 +475,10 @@ adminRouter.put('/employees/:id', userAuth, adminAuth, async (req, res) => {
         const targetUser = await User.findById(id);
         if (!targetUser) return res.status(404).json({ success: false, message: "User not found" });
 
-        // 1. Hierarchy Check
         if (req.user.role === 'Admin' && ['Admin', 'SuperAdmin'].includes(targetUser.role)) {
             return res.status(403).json({ success: false, message: "Permission denied. Admins cannot edit other administrators." });
         }
 
-        // 2. Apply Changes
         if (name) targetUser.name = name;
         if (email) targetUser.email = email;
         if (phone) targetUser.mobile = phone;
@@ -544,9 +489,6 @@ adminRouter.put('/employees/:id', userAuth, adminAuth, async (req, res) => {
 
         await targetUser.save();
 
-        // --- NOTIFICATION LOGIC ---
-
-        // A. Notify the Target User (Employee/Admin being updated)
         const userNotif = await Notification.create({
             recipient: targetUser._id,
             title: "Profile Updated",
@@ -564,14 +506,12 @@ adminRouter.put('/employees/:id', userAuth, adminAuth, async (req, res) => {
         }
         sendEmployeeProfileUpdatedEmail(targetUser.email, targetUser.name).catch(console.error);
 
-        // B. Notify All Other Admins (Audit Log)
         const admins = await User.find({
             role: { $in: ['Admin'] },
-            _id: { $ne: req.user._id } // Don't notify the person who made the change
+            _id: { $ne: req.user._id }
         });
 
         await Promise.all(admins.map(async (admin) => {
-            // Save to DB
             const auditNotif = await Notification.create({
                 recipient: admin._id,
                 title: "Audit: Profile Modified",
@@ -579,12 +519,10 @@ adminRouter.put('/employees/:id', userAuth, adminAuth, async (req, res) => {
                 type: "System"
             });
 
-            // Real-time
             if (req.io) {
                 req.io.to(admin._id.toString()).emit('new_notification', auditNotif);
             }
 
-            // Email (only if they haven't disabled admin alerts)
             if (admin.preferences?.adminNotifications !== false) {
                 sendAdminAuditEmail(admin.email, targetUser.name, "UPDATED", req.user.name).catch(console.error);
             }
@@ -609,7 +547,6 @@ adminRouter.delete('/employees/:id', userAuth, adminAuth, async (req, res) => {
 
         if (!userToDelete) return res.status(404).json({ success: false, message: "User not found." });
 
-        // 1. Hierarchy & Security Checks
         if (userToDelete._id.toString() === req.user._id.toString()) {
             return res.status(400).json({ success: false, message: "You cannot delete your own account." });
         }
@@ -622,15 +559,12 @@ adminRouter.delete('/employees/:id', userAuth, adminAuth, async (req, res) => {
 
         const deletedName = userToDelete.name;
         const deletedEmail = userToDelete.email;
-        // 2. Perform Deletion & Cleanup
+
         await User.findByIdAndDelete(id);
         await Notification.deleteMany({ recipient: id });
 
         sendEmployeeProfileDeletedEmail(deletedEmail, deletedName).catch(console.error);
 
-        // --- NOTIFICATION LOGIC ---
-
-        // Notify All Other Admins about the account removal
         const admins = await User.find({
             role: { $in: ['Admin'] },
             _id: { $ne: req.user._id }
@@ -666,14 +600,12 @@ adminRouter.delete('/employees/:id', userAuth, adminAuth, async (req, res) => {
 // ==========================================
 adminRouter.post('/employees/:id/assign-task', userAuth, adminAuth, async (req, res) => {
     try {
-        const { id } = req.params; // Teacher's ID
-        // Notice we are pulling schoolName and schoolAddress now instead of schoolId!
+        const { id } = req.params;
         const { schoolName, schoolAddress, latitude, longitude, taskDescription, category, daysAllotted, duration, timing } = req.body;
 
         const employee = await User.findById(id);
         if (!employee) return res.status(404).json({ success: false, message: "Employee not found." });
 
-        // 1. FIND OR CREATE THE SCHOOL (Just like in assign-school)
         let school = await School.findOne({ schoolName: { $regex: new RegExp(`^${schoolName}$`, 'i') } });
         if (!school) {
             school = new School({
@@ -687,7 +619,6 @@ adminRouter.post('/employees/:id/assign-task', userAuth, adminAuth, async (req, 
             await school.save();
         }
 
-        // 2. Create the Task using the REAL school._id
         const newTask = await Task.create({
             teacher: id,
             school: school._id,
@@ -698,15 +629,11 @@ adminRouter.post('/employees/:id/assign-task', userAuth, adminAuth, async (req, 
             status: 'Pending'
         });
 
-        // 3. Populate for the emails
         const populatedTask = await Task.findById(newTask._id).populate('school');
 
         const taskTitle = `Assignment at ${school.schoolName}`;
         const scheduleString = `${daysAllotted.join(', ')} (${timing})`;
 
-        // --- NOTIFICATIONS ---
-
-        // A. Notify Employee
         if (employee.preferences?.employeeNotifications !== false) {
             sendEmployeeTaskAssignedEmail(employee.email, employee.name, taskTitle, taskDescription, scheduleString, category);
         }
@@ -720,7 +647,6 @@ adminRouter.post('/employees/:id/assign-task', userAuth, adminAuth, async (req, 
 
         if (req.io) req.io.to(employee._id.toString()).emit('new_notification', empNotif);
 
-        // B. Notify Admins
         const admins = await User.find({ role: { $in: ['Admin', 'SuperAdmin'] }, _id: { $ne: req.user._id } });
 
         const detailsHtml = `
@@ -764,7 +690,6 @@ adminRouter.put('/tasks/:taskId', userAuth, adminAuth, async (req, res) => {
         const schoolName = task.school.schoolName;
         const taskTitle = `Assignment at ${schoolName}`;
 
-        // Change Tracking Logic
         const changes = [];
         const fieldLabels = {
             taskDescription: "Description",
@@ -780,7 +705,6 @@ adminRouter.put('/tasks/:taskId', userAuth, adminAuth, async (req, res) => {
             let oldVal = task[key];
             let newVal = req.body[key];
 
-            // Handle array comparison for 'daysAllotted'
             if (Array.isArray(oldVal)) {
                 if (oldVal.sort().join(',') !== newVal.sort().join(',')) {
                     changes.push({
@@ -790,7 +714,6 @@ adminRouter.put('/tasks/:taskId', userAuth, adminAuth, async (req, res) => {
                     });
                 }
             }
-            // Handle standard string comparison
             else if (oldVal !== newVal) {
                 changes.push({
                     field: fieldLabels[key],
@@ -804,22 +727,17 @@ adminRouter.put('/tasks/:taskId', userAuth, adminAuth, async (req, res) => {
             return res.status(200).json({ success: true, message: "No changes made." });
         }
 
-        // Apply Updates
         Object.assign(task, req.body);
 
-        // If admin updates it, and the status isn't rejected, clear the reject reason
         if (req.body.status && req.body.status !== 'Rejected') {
             task.rejectReason = null;
         }
 
         await task.save();
 
-        // --- NOTIFICATIONS ---
         const changeSummary = changes.map(c => c.field).join(', ');
 
-        // A. Notify Employee
         if (employee.preferences?.employeeNotifications !== false) {
-            // Format task object slightly so the email template reads it correctly
             const formattedTask = {
                 description: task.taskDescription,
                 dueDate: `${task.daysAllotted.join(', ')} (${task.timing})`,
@@ -838,7 +756,6 @@ adminRouter.put('/tasks/:taskId', userAuth, adminAuth, async (req, res) => {
 
         if (req.io) req.io.to(employee._id.toString()).emit('new_notification', empNotif);
 
-        // B. Notify Admins
         const admins = await User.find({ role: { $in: ['Admin'] }, _id: { $ne: req.user._id } });
 
         const detailsHtml = changes.map(c => `
@@ -884,12 +801,8 @@ adminRouter.delete('/tasks/:taskId', userAuth, adminAuth, async (req, res) => {
         const employee = task.teacher;
         const taskTitle = `Assignment at ${task.school.schoolName}`;
 
-        // Perform Deletion
         await Task.findByIdAndDelete(taskId);
 
-        // --- NOTIFICATIONS ---
-
-        // A. Notify Employee
         if (employee.preferences?.employeeNotifications !== false) {
             sendEmployeeTaskRevokedEmail(employee.email, employee.name, taskTitle);
         }
@@ -903,7 +816,6 @@ adminRouter.delete('/tasks/:taskId', userAuth, adminAuth, async (req, res) => {
 
         if (req.io) req.io.to(employee._id.toString()).emit('new_notification', empNotif);
 
-        // B. Notify Admins
         const admins = await User.find({ role: { $in: ['Admin'] }, _id: { $ne: req.user._id } });
 
         const detailsHtml = `
@@ -937,14 +849,12 @@ adminRouter.delete('/tasks/:taskId', userAuth, adminAuth, async (req, res) => {
 // ==========================================
 adminRouter.post('/employees/:id/warnings', userAuth, adminAuth, async (req, res) => {
     try {
-        const { id } = req.params; // Employee ID
-        const { level, reason } = req.body; // 'Verbal', 'Written', 'Final'
+        const { id } = req.params;
+        const { level, reason } = req.body;
 
-        // 1. Find employee and validate FIRST
         const employee = await User.findById(id);
         if (!employee) return res.status(404).json({ success: false, message: "Employee not found." });
 
-        // 2. Create the Warning Record
         const newWarning = await Warning.create({
             teacher: employee._id,
             issuedBy: req.user._id,
@@ -952,14 +862,8 @@ adminRouter.post('/employees/:id/warnings', userAuth, adminAuth, async (req, res
             reason
         });
 
-        // Optional: Populate the issuer's name so the returned object is complete
         await newWarning.populate('issuedBy', 'name');
 
-        // ==========================================
-        // BACKGROUND NOTIFICATIONS
-        // ==========================================
-
-        // --- A. Notify Employee ---
         const empMsg = `You have been issued a ${level} Warning by Administration.`;
 
         if (employee.preferences?.employeeNotifications !== false) {
@@ -970,12 +874,11 @@ adminRouter.post('/employees/:id/warnings', userAuth, adminAuth, async (req, res
             recipient: employee._id,
             title: `${level} Warning Issued`,
             message: empMsg,
-            type: "Warning" // Matches your enum
+            type: "Warning"
         });
 
         if (req.io) req.io.to(employee._id.toString()).emit('new_notification', empNotif);
 
-        // --- B. Notify Admins (Audit Trail) ---
         const admins = await User.find({ role: { $in: ['Admin', 'SuperAdmin'] }, _id: { $ne: req.user._id } });
 
         await Promise.all(admins.map(async (admin) => {
@@ -987,7 +890,7 @@ adminRouter.post('/employees/:id/warnings', userAuth, adminAuth, async (req, res
                 recipient: admin._id,
                 title: "Audit: Warning Issued",
                 message: `${req.user.name} issued a ${level} warning to ${employee.name}.`,
-                type: "System" // Matches your enum
+                type: "System"
             });
 
             if (req.io) req.io.to(admin._id.toString()).emit('new_notification', adminNotif);
@@ -1002,7 +905,7 @@ adminRouter.post('/employees/:id/warnings', userAuth, adminAuth, async (req, res
 });
 
 // ==========================================
-// 15. GET EMPLOYEE ATTENDANCE (HIERARCHICAL)
+// 15. GET EMPLOYEE ATTENDANCE (HIERARCHICAL) 
 // ==========================================
 adminRouter.get('/employees/:id/attendance', userAuth, adminAuth, async (req, res) => {
     try {
@@ -1013,7 +916,6 @@ adminRouter.get('/employees/:id/attendance', userAuth, adminAuth, async (req, re
         if (!employee) return res.status(404).json({ success: false, message: "Employee not found." });
 
         // 2. Fetch all attendance records for this employee, populated with School info
-        // Sorted by date descending (newest first)
         const attendances = await Attendance.find({ teacher: id })
             .populate('school', 'schoolName')
             .sort({ date: -1 });
@@ -1021,7 +923,6 @@ adminRouter.get('/employees/:id/attendance', userAuth, adminAuth, async (req, re
         // 3. The Aggregation Maps
         const monthMap = new Map();
 
-        // Time formatter helper
         const formatTime = (dateString) => {
             if (!dateString) return "-";
             return new Date(dateString).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
@@ -1029,7 +930,9 @@ adminRouter.get('/employees/:id/attendance', userAuth, adminAuth, async (req, re
 
         // 4. Process each record and build the drill-down hierarchy
         attendances.forEach(att => {
-            if (!att.school) return; // Skip if school was deleted
+            // FIX: Gracefully handle missing/deleted schools instead of skipping!
+            const schoolName = att.school ? att.school.schoolName : "Unknown/Deleted School";
+            const schoolId = att.school ? att.school._id.toString() : "deleted-school";
 
             // A. Date Parsing for "March 2026"
             const dateObj = new Date(att.date);
@@ -1049,19 +952,19 @@ adminRouter.get('/employees/:id/attendance', userAuth, adminAuth, async (req, re
             const monthObj = monthMap.get(monthKey);
 
             // C. Initialize School Level
-            const schoolId = att.school._id.toString();
             if (!monthObj.schoolsMap.has(schoolId)) {
                 monthObj.schoolsMap.set(schoolId, {
                     id: schoolId,
-                    name: att.school.schoolName,
+                    name: schoolName, // Uses our safe fallback above
                     categoriesMap: new Map()
                 });
             }
             const schoolObj = monthObj.schoolsMap.get(schoolId);
 
             // D. Initialize Category (Band) Level
-            const categoryName = att.band;
+            const categoryName = att.band || "Uncategorized";
             const categoryId = `${schoolId}-${categoryName}`;
+
             if (!schoolObj.categoriesMap.has(categoryId)) {
                 schoolObj.categoriesMap.set(categoryId, {
                     id: categoryId,
@@ -1075,7 +978,7 @@ adminRouter.get('/employees/:id/attendance', userAuth, adminAuth, async (req, re
 
             // E. Calculate Metrics
             catObj.recordCount++;
-            const statusUpper = att.status.toUpperCase();
+            const statusUpper = (att.status || "UNKNOWN").toUpperCase();
             if (statusUpper === 'PRESENT') catObj.metrics.present++;
             else if (statusUpper === 'LATE') catObj.metrics.late++;
             else if (statusUpper === 'ABSENT') catObj.metrics.absent++;
@@ -1087,10 +990,8 @@ adminRouter.get('/employees/:id/attendance', userAuth, adminAuth, async (req, re
             const dayNum = dateObj.getDate().toString().padStart(2, '0');
             const shortMonth = dateObj.toLocaleString('en-US', { month: 'short' });
 
-            // "Mar 15, 2024 (Fri)"
             const formattedDate = `${shortMonth} ${dayNum}, ${year} (${dayName})`;
 
-            // Prioritize the note to show
             const displayNote = att.teacherNote || att.lateReason || att.eventNote || null;
 
             catObj.records.push({
@@ -1153,15 +1054,12 @@ adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
         const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
         const currentDayName = days[today.getDay()];
 
-        // Ensure accurate local date for query
         const dateFormatter = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' });
         const dateString = dateFormatter.format(today);
 
-        // 1. Total Active Employees
         const employees = await User.find({ role: 'Employee', isActive: true });
         const totalEmployees = employees.length;
 
-        // 2. Calculate Total Expected Shifts Today (Treating each assignment separately)
         let expectedShifts = 0;
         employees.forEach(emp => {
             if (emp.assignments && emp.assignments.length > 0) {
@@ -1173,11 +1071,10 @@ adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
             }
         });
 
-        // 3. Get Actual Attendance for Today
         const todaysAttendance = await Attendance.find({ date: dateString })
             .populate('teacher', 'name zone')
             .populate('school', 'schoolName address')
-            .sort({ createdAt: -1 }); // Newest first
+            .sort({ createdAt: -1 });
 
         let presentCount = 0;
         let noShowCount = 0;
@@ -1185,15 +1082,11 @@ adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
         todaysAttendance.forEach(record => {
             if (['Present', 'Late', 'Event'].includes(record.status)) presentCount++;
             if (record.status === 'Absent') noShowCount++;
-            // Note: Holiday records mean they aren't pending anymore, but they don't count as present/no-show
         });
 
-        // 4. Calculate Pending (Expected - Completed)
         const pendingCount = Math.max(0, expectedShifts - todaysAttendance.length);
 
-        // 5. Format Recent Activity with Detailed Info
         const recentActivity = todaysAttendance.slice(0, 15).map(att => {
-            // Calculate time ago
             const timeDiffMs = new Date() - new Date(att.createdAt);
             const diffMins = Math.round(timeDiffMs / 60000);
             const timeAgo = diffMins < 1 ? "Just now" : diffMins < 60 ? `${diffMins} min ago` : `${Math.floor(diffMins / 60)} hr ago`;
