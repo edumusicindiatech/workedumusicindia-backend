@@ -1144,5 +1144,92 @@ adminRouter.get('/daily-feed', async (req, res) => {
     }
 });
 
+// ==========================================
+// 17. GET Admin Dashboard
+// ==========================================
+adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
+    try {
+        const today = new Date();
+        const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+        const currentDayName = days[today.getDay()];
+
+        // Ensure accurate local date for query
+        const dateFormatter = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' });
+        const dateString = dateFormatter.format(today);
+
+        // 1. Total Active Employees
+        const employees = await User.find({ role: 'Employee', isActive: true });
+        const totalEmployees = employees.length;
+
+        // 2. Calculate Total Expected Shifts Today (Treating each assignment separately)
+        let expectedShifts = 0;
+        employees.forEach(emp => {
+            if (emp.assignments && emp.assignments.length > 0) {
+                emp.assignments.forEach(assignment => {
+                    if (assignment.allowedDays.includes(currentDayName)) {
+                        expectedShifts++;
+                    }
+                });
+            }
+        });
+
+        // 3. Get Actual Attendance for Today
+        const todaysAttendance = await Attendance.find({ date: dateString })
+            .populate('teacher', 'name zone')
+            .populate('school', 'schoolName address')
+            .sort({ createdAt: -1 }); // Newest first
+
+        let presentCount = 0;
+        let noShowCount = 0;
+
+        todaysAttendance.forEach(record => {
+            if (['Present', 'Late', 'Event'].includes(record.status)) presentCount++;
+            if (record.status === 'Absent') noShowCount++;
+            // Note: Holiday records mean they aren't pending anymore, but they don't count as present/no-show
+        });
+
+        // 4. Calculate Pending (Expected - Completed)
+        const pendingCount = Math.max(0, expectedShifts - todaysAttendance.length);
+
+        // 5. Format Recent Activity with Detailed Info
+        const recentActivity = todaysAttendance.slice(0, 15).map(att => {
+            // Calculate time ago
+            const timeDiffMs = new Date() - new Date(att.createdAt);
+            const diffMins = Math.round(timeDiffMs / 60000);
+            const timeAgo = diffMins < 1 ? "Just now" : diffMins < 60 ? `${diffMins} min ago` : `${Math.floor(diffMins / 60)} hr ago`;
+
+            return {
+                id: att._id,
+                name: att.teacher?.name || "Unknown Teacher",
+                zone: att.teacher?.zone || "Unassigned",
+                school: att.school?.schoolName || "Unknown School",
+                category: att.band,
+                action: att.status === 'Late' ? "Late Check-in" :
+                    att.status === 'Absent' ? "Marked Absent" :
+                        att.status === 'Event' ? "Live Event Started" : "Marked Present",
+                timeAgo: timeAgo,
+                checkInTime: att.checkInTime ? new Date(att.checkInTime).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : "-",
+                status: att.status.toLowerCase() === 'present' || att.status.toLowerCase() === 'event' ? 'present' :
+                    att.status.toLowerCase() === 'absent' ? 'absent' : 'warning'
+            };
+        });
+
+        res.json({
+            success: true,
+            data: {
+                stats: {
+                    totalEmployees,
+                    presentToday: presentCount,
+                    noShow: noShowCount,
+                    pending: pendingCount
+                },
+                recentActivity
+            }
+        });
+    } catch (error) {
+        console.error("Dashboard Stats Error:", error);
+        res.status(500).json({ success: false, message: "Error fetching dashboard data" });
+    }
+});
 
 module.exports = adminRouter;

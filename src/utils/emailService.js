@@ -16,6 +16,7 @@ const { getAdminTaskAuditTemplate } = require('../templates/adminTaskEmail');
 const getAdminTaskResponseTemplate = require('../templates/adminTaskResponseEmail');
 const getEmployeeWarningTemplate = require('../templates/employeeWarningEmail');
 const getAdminWarningAuditTemplate = require('../templates/adminWarningAuditEmail');
+const getEmployeeShiftAlertTemplate = require('../templates/employeeShiftAlertEmail');
 
 require('dotenv').config();
 
@@ -251,6 +252,23 @@ const sendAdminWarningAuditEmail = async (adminEmail, adminName, employeeName, l
     } catch (e) { console.error("Admin warning audit email error:", e); }
 };
 
+const sendPreShiftWarningEmail = async (email, name, schoolName, category, startTime) => {
+    try {
+        const mailOptions = {
+            from: `"Operations Center" <${process.env.EMAIL_USER}>`, // Update to match your setup
+            to: email,
+            subject: `Action Required: Shift at ${schoolName} starts in 15 mins`,
+            html: getEmployeeShiftAlertTemplate(name, schoolName, category, startTime)
+        };
+
+        const info = await transporter.sendMail(mailOptions);
+        console.log(`[Email Sent] Pre-shift warning delivered to ${email}. Message ID: ${info.messageId}`);
+        return true;
+    } catch (error) {
+        console.error(`[Email Error] Failed to send pre-shift warning to ${email}:`, error);
+        return false;
+    }
+};
 module.exports = {
     sendAdminWelcomeEmail,
     sendEmployeeWelcomeEmail,
@@ -269,5 +287,6 @@ module.exports = {
     sendAdminTaskAuditEmail,
     sendAdminTaskResponseEmail,
     sendEmployeeWarningEmail,
-    sendAdminWarningAuditEmail
+    sendAdminWarningAuditEmail,
+    sendPreShiftWarningEmail
 };

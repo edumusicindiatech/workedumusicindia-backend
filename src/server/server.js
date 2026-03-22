@@ -9,6 +9,8 @@ const connectDB = require('../database/config');
 const authRouter = require('../routes/authRouter');
 const employeeRouter = require('../routes/employeeRouter');
 const adminRouter = require('../routes/adminRouter');
+const startShiftWarningCron = require('../jobs/shiftWarningCron');
+const notificationRouter = require('../routes/notificationRouter');
 
 const app = express();
 const server = http.createServer(app);
@@ -27,6 +29,9 @@ io.on('connection', (socket) => {
     });
 });
 
+// Initialize the Cron Job, passing the io instance so it can push live alerts
+startShiftWarningCron(io);
+
 app.use((req, res, next) => {
     req.io = io;
     next();
@@ -42,6 +47,7 @@ app.use(express.json());
 app.use('/api/auth', authRouter);
 app.use('/api/admin', adminRouter);
 app.use('/api/employee', employeeRouter);
+app.use('/api/admin/notifications', notificationRouter);
 
 const PORT = process.env.PORT || 5000;
 
