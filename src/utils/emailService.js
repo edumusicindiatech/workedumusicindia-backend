@@ -11,6 +11,9 @@ const getEmployeeAssignmentRevokedTemplate = require('../templates/employeeAssig
 const getEmployeeProfileUpdatedTemplate = require('../templates/employeeProfileUpdateEmail');
 const getAdminProfileUpdatedTemplate = require('../templates/adminProfileUpdateEmail');
 const getEmployeeProfileDeletedTemplate = require('../templates/employeeProfileDeletedEmail');
+const { getEmployeeTaskAssignedTemplate, getEmployeeTaskUpdatedTemplate, getEmployeeTaskRevokedTemplate } = require('../templates/employeeTaskEmail');
+const { getAdminTaskAuditTemplate } = require('../templates/adminTaskEmail');
+const getAdminTaskResponseTemplate = require('../templates/adminTaskResponseEmail');
 
 require('dotenv').config();
 
@@ -166,6 +169,64 @@ const sendAdminAuditEmail = async (adminEmail, targetName, changedBy) => {
     } catch (e) { console.error(e); }
 };
 
+const sendEmployeeTaskAssignedEmail = async (email, name, taskTitle, taskDescription, scheduleString, category) => {
+    try {
+        await transporter.sendMail({
+            from: process.env.EMAIL_FROM,
+            to: email,
+            subject: `New Task Assigned: ${taskTitle}`,
+            // Pass category into the template
+            html: getEmployeeTaskAssignedTemplate(name, taskTitle, taskDescription, scheduleString, category)
+        });
+    } catch (e) {
+        console.error("Error sending employee task assigned email:", e);
+    }
+};
+
+const sendEmployeeTaskUpdatedEmail = async (email, name, taskTitle, changes, currentTask) => {
+    try {
+        await transporter.sendMail({
+            from: process.env.EMAIL_FROM,
+            to: email,
+            subject: `Task Updated: ${taskTitle}`,
+            html: getEmployeeTaskUpdatedTemplate(name, taskTitle, changes, currentTask)
+        });
+    } catch (e) { console.error("Error sending task updated email:", e); }
+};
+
+const sendEmployeeTaskRevokedEmail = async (email, name, taskTitle) => {
+    try {
+        await transporter.sendMail({
+            from: process.env.EMAIL_FROM,
+            to: email,
+            subject: `Task Revoked: ${taskTitle}`,
+            html: getEmployeeTaskRevokedTemplate(name, taskTitle)
+        });
+    } catch (e) { console.error("Error sending task revoked email:", e); }
+};
+
+const sendAdminTaskAuditEmail = async (adminEmail, adminName, empName, taskTitle, actionType, detailsHtml) => {
+    try {
+        await transporter.sendMail({
+            from: process.env.EMAIL_FROM,
+            to: adminEmail,
+            subject: `[Audit] Task ${actionType}: ${empName}`,
+            html: getAdminTaskAuditTemplate(adminName, empName, taskTitle, actionType, detailsHtml)
+        });
+    } catch (e) { console.error("Error sending admin task audit email:", e); }
+};
+
+const sendAdminTaskResponseEmail = async (adminEmail, adminName, employeeName, taskTitle, status, rejectReason) => {
+    try {
+        await transporter.sendMail({
+            from: process.env.EMAIL_FROM,
+            to: adminEmail,
+            subject: `Task ${status}: ${employeeName}`,
+            html: getAdminTaskResponseTemplate(adminName, employeeName, taskTitle, status, rejectReason)
+        });
+    } catch (e) { console.error("Error sending admin task response email:", e); }
+};
+
 module.exports = {
     sendAdminWelcomeEmail,
     sendEmployeeWelcomeEmail,
@@ -177,5 +238,10 @@ module.exports = {
     sendAdminAssignmentRevokedEmail,
     sendEmployeeProfileUpdatedEmail,
     sendEmployeeProfileDeletedEmail,
-    sendAdminAuditEmail
+    sendAdminAuditEmail,
+    sendEmployeeTaskAssignedEmail,
+    sendEmployeeTaskUpdatedEmail,
+    sendEmployeeTaskRevokedEmail,
+    sendAdminTaskAuditEmail,
+    sendAdminTaskResponseEmail
 };

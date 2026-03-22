@@ -15,6 +15,12 @@ const TaskSchema = new mongoose.Schema({
         type: String,
         required: true
     },
+    category: {
+        type: String,
+        enum: ['Junior Band', 'Senior Band'],
+        required: true,
+        default: 'Junior Band'
+    },
     daysAllotted: [{ type: String }],
     duration: { type: String }, // e.g., "2 Days"
     timing: { type: String },   // e.g., "09:00 AM - 03:00 PM"

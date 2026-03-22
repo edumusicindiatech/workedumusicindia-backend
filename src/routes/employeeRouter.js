@@ -4,6 +4,9 @@ const School = require('../models/School');
 const getCityFromCoordinates = require('../utils/getCityFromCoords');
 const Attendance = require('../models/Attendance');
 const User = require('../models/User');
+const Task = require('../models/Task');
+const { sendAdminTaskAuditEmail, sendAdminTaskResponseEmail } = require('../utils/emailService');
+const Notification = require('../models/Notification');
 const employeeRouter = express.Router();
 
 
@@ -444,5 +447,117 @@ employeeRouter.get('/my-schedule', userAuth, async (req, res) => {
     }
 });
 
+// PUT : Change the Response of the Task
+employeeRouter.put('/tasks/:taskId/respond', userAuth, async (req, res) => {
+    try {
+        const { taskId } = req.params;
+        const { status, rejectReason } = req.body; // 'Accepted' or 'Rejected'
+
+        const task = await Task.findById(taskId).populate('school');
+        if (!task) return res.status(404).json({ success: false, message: "Task not found" });
+
+        // Ensure the teacher responding is the one assigned to the task
+        if (task.teacher.toString() !== req.user._id.toString()) {
+            return res.status(403).json({ success: false, message: "Unauthorized" });
+        }
+
+        // 1. Update Task Status
+        task.status = status;
+        if (status === 'Rejected') {
+            task.rejectReason = rejectReason;
+        }
+        await task.save();
+
+        // 2. THE MAGIC: If Accepted, convert it to a live School Assignment!
+        if (status === 'Accepted') {
+            const employee = await User.findById(req.user._id);
+
+            // 1. Parse timing "08:00 AM - 02:00 PM" into separate fields
+            let startTime = "";
+            let endTime = "";
+            if (task.timing && task.timing.includes('-')) {
+                const parts = task.timing.split('-');
+                startTime = parts[0].trim();
+                endTime = parts[1].trim();
+            }
+
+            // 2. Extract Geofence from the school object
+            const coords = task.school?.location?.coordinates || [0, 0];
+
+            // 3. Create the official Assignment object
+            const newAssignment = {
+                school: task.school._id,
+                category: task.category || "Junior Band", // Matches task category
+                startDate: new Date(), // Converts to live today
+                startTime: startTime,
+                endTime: endTime,
+                allowedDays: task.daysAllotted,
+                geofence: {
+                    latitude: parseFloat(coords[1] || 0),
+                    longitude: parseFloat(coords[0] || 0)
+                }
+            };
+
+            employee.assignments.push(newAssignment);
+            await employee.save();
+        }
+
+        // 3. Notify Admins (Real-time Socket Update & Dedicated Email)
+        const admins = await User.find({ role: { $in: ['Admin', 'SuperAdmin'] } });
+        const taskTitle = `Assignment at ${task.school.schoolName}`;
+
+        // Build the HTML details for the email based on the status
+        let detailsHtml = `
+            <div class="card-item">
+                <span class="label">Response</span>
+                <div class="value" style="color: ${status === 'Accepted' ? '#10b981' : '#ef4444'};">
+                    ${status}
+                </div>
+            </div>
+        `;
+
+        if (status === 'Rejected' && rejectReason) {
+            detailsHtml += `
+                <div class="card-item">
+                    <span class="label">Reason for Rejection</span>
+                    <div class="value" style="font-weight: 400;">${rejectReason}</div>
+                </div>
+            `;
+        }
+
+        await Promise.all(admins.map(async (admin) => {
+            // 1. Database Notification
+            const adminNotif = await Notification.create({
+                recipient: admin._id,
+                title: `Task ${status}`,
+                message: `${req.user.name} has ${status.toLowerCase()} the task at ${task.school.schoolName}.`,
+                type: "System"
+            });
+
+            // 2. Real-time Socket Emission
+            if (req.io) {
+                req.io.to(admin._id.toString()).emit('new_notification', adminNotif);
+            }
+
+            // 3. Send Dedicated Email (if admin hasn't disabled notifications)
+            if (admin.preferences?.adminNotifications !== false) {
+                sendAdminTaskResponseEmail(
+                    admin.email,
+                    admin.name,
+                    req.user.name,
+                    taskTitle,
+                    status,
+                    rejectReason
+                );
+            }
+        }));
+
+        res.status(200).json({ success: true, message: `Task marked as ${status}` });
+
+    } catch (error) {
+        console.error("Task Response Error:", error);
+        res.status(500).json({ success: false, message: "Server error responding to task." });
+    }
+});
 
 module.exports = employeeRouter

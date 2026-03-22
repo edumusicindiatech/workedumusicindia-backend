@@ -4,12 +4,13 @@ const crypto = require('crypto');
 const validator = require('validator');
 const bcrypt = require('bcrypt');
 const adminRouter = express.Router();
-const { sendAdminWelcomeEmail, sendEmployeeWelcomeEmail, sendSchoolAssignmentEmail, sendAdminAssignmentAlertEmail, sendEmployeeAssignmentRevokedEmail, sendAdminAssignmentRevokedEmail, sendEmployeeAssignmentUpdatedEmail, sendAdminAssignmentUpdatedEmail, sendEmployeeProfileUpdatedEmail, sendAdminAuditEmail, sendEmployeeProfileDeletedEmail } = require('../utils/emailService');
+const { sendAdminWelcomeEmail, sendEmployeeWelcomeEmail, sendSchoolAssignmentEmail, sendAdminAssignmentAlertEmail, sendEmployeeAssignmentRevokedEmail, sendAdminAssignmentRevokedEmail, sendEmployeeAssignmentUpdatedEmail, sendAdminAssignmentUpdatedEmail, sendEmployeeProfileUpdatedEmail, sendAdminAuditEmail, sendEmployeeProfileDeletedEmail, sendEmployeeTaskAssignedEmail, sendAdminTaskAuditEmail, sendEmployeeTaskUpdatedEmail, sendEmployeeTaskRevokedEmail } = require('../utils/emailService');
 const adminAuth = require('../middleware/adminAuth');
 const userAuth = require('../middleware/userAuth');
 const requireSuperAdmin = require('../middleware/requireSuperAdmin');
 const School = require('../models/School');
 const Notification = require('../models/Notification');
+const Task = require('../models/Task');
 
 
 // ==========================================
@@ -150,25 +151,23 @@ adminRouter.post('/create-employee', userAuth, adminAuth, async (req, res) => {
 // ==========================================
 adminRouter.get('/roster', userAuth, adminAuth, async (req, res) => {
     try {
-        // Fetch users who have the system role of 'Employee'
-        // We use .select() to only grab the fields we need, making the API super fast
-        const employees = await User.find({ role: 'Employee' })
-            .select('_id name designation zone')
-            .sort({ createdAt: -1 }); // Newest employees first
+        const queryFilter = req.user.role === 'SuperAdmin'
+            ? { role: { $in: ['Employee', 'Admin'] }, _id: { $ne: req.user._id } }
+            : { role: 'Employee' };
 
-        // Map the database fields to exactly match what your React frontend expects
+        const employees = await User.find(queryFilter)
+            .select('_id name designation zone role')
+            .sort({ createdAt: -1 });
+
         const formattedRoster = employees.map(emp => ({
             id: emp._id,
             name: emp.name,
-            role: emp.designation || 'Unassigned', // Maps to the UI "Role" column
-            location: emp.zone || 'Unassigned',    // Maps to the UI "Location" column
+            role: emp.designation || 'Unassigned',
+            location: emp.zone || 'Unassigned',
+            systemRole: emp.role
         }));
 
-        res.status(200).json({
-            success: true,
-            data: formattedRoster
-        });
-
+        res.status(200).json({ success: true, data: formattedRoster });
     } catch (error) {
         console.error("Fetch Roster Error:", error);
         res.status(500).json({ success: false, message: "Server error while fetching roster." });
@@ -180,16 +179,30 @@ adminRouter.get('/roster', userAuth, adminAuth, async (req, res) => {
 // ==========================================
 adminRouter.get('/employees/:id', userAuth, adminAuth, async (req, res) => {
     try {
-        // THE CRITICAL FIX: .populate() replaces the school ID with the full School object!
+        // 1. Fetch the employee and populate their regular school assignments
+        // We use .lean() here so Mongoose returns a plain JavaScript object, 
+        // allowing us to easily attach the tasks array to it in Step 3.
         const employee = await User.findById(req.params.id)
             .select('-password')
-            .populate('assignments.school');
+            .populate('assignments.school')
+            .lean();
 
         if (!employee) {
             return res.status(404).json({ success: false, message: "Employee not found." });
         }
 
+        // 2. Fetch all tasks assigned to this employee from the separate Task collection.
+        // We MUST populate 'school' here so your TasksTab can display the schoolName and address!
+        const tasks = await Task.find({ teacher: req.params.id })
+            .populate('school')
+            .sort({ createdAt: -1 }); // Sorts by newest first
+
+        // 3. Inject the tasks array into the employee object payload
+        employee.tasks = tasks;
+
+        // 4. Send the combined data to the frontend
         res.status(200).json({ success: true, data: employee });
+
     } catch (error) {
         console.error("Fetch Employee Error:", error);
         res.status(500).json({ success: false, message: "Server error while fetching employee details." });
@@ -646,5 +659,277 @@ adminRouter.delete('/employees/:id', userAuth, adminAuth, async (req, res) => {
         res.status(500).json({ success: false, message: "Server error while deleting user." });
     }
 });
+
+// ==========================================
+// 10. ASSIGN TASK TO EMPLOYEE
+// ==========================================
+adminRouter.post('/employees/:id/assign-task', userAuth, adminAuth, async (req, res) => {
+    try {
+        const { id } = req.params; // Teacher's ID
+        // Notice we are pulling schoolName and schoolAddress now instead of schoolId!
+        const { schoolName, schoolAddress, latitude, longitude, taskDescription, category, daysAllotted, duration, timing } = req.body;
+
+        const employee = await User.findById(id);
+        if (!employee) return res.status(404).json({ success: false, message: "Employee not found." });
+
+        // 1. FIND OR CREATE THE SCHOOL (Just like in assign-school)
+        let school = await School.findOne({ schoolName: { $regex: new RegExp(`^${schoolName}$`, 'i') } });
+        if (!school) {
+            school = new School({
+                schoolName,
+                address: schoolAddress || "No address provided",
+                location: {
+                    type: 'Point',
+                    coordinates: [parseFloat(longitude || 0), parseFloat(latitude || 0)]
+                }
+            });
+            await school.save();
+        }
+
+        // 2. Create the Task using the REAL school._id
+        const newTask = await Task.create({
+            teacher: id,
+            school: school._id,
+            taskDescription,
+            daysAllotted,
+            duration,
+            timing,
+            status: 'Pending'
+        });
+
+        // 3. Populate for the emails
+        const populatedTask = await Task.findById(newTask._id).populate('school');
+
+        const taskTitle = `Assignment at ${school.schoolName}`;
+        const scheduleString = `${daysAllotted.join(', ')} (${timing})`;
+
+        // --- NOTIFICATIONS ---
+
+        // A. Notify Employee
+        if (employee.preferences?.employeeNotifications !== false) {
+            sendEmployeeTaskAssignedEmail(employee.email, employee.name, taskTitle, taskDescription, scheduleString, category);
+        }
+
+        const empNotif = await Notification.create({
+            recipient: employee._id,
+            title: "New Task Assigned",
+            message: `You have a new task at ${school.schoolName}.`,
+            type: "Assignment"
+        });
+
+        if (req.io) req.io.to(employee._id.toString()).emit('new_notification', empNotif);
+
+        // B. Notify Admins
+        const admins = await User.find({ role: { $in: ['Admin', 'SuperAdmin'] }, _id: { $ne: req.user._id } });
+
+        const detailsHtml = `
+            <div class="card-item"><span class="label">Description</span><div class="value" style="font-weight: 400;">${taskDescription}</div></div>
+            <div class="card-item"><span class="label">Schedule</span><div class="value">${scheduleString}</div></div>
+        `;
+
+        await Promise.all(admins.map(async (admin) => {
+            if (admin.preferences?.adminNotifications !== false) {
+                sendAdminTaskAuditEmail(admin.email, admin.name, employee.name, taskTitle, "ASSIGNED", detailsHtml);
+            }
+
+            const adminNotif = await Notification.create({
+                recipient: admin._id,
+                title: "System Alert: Task Assigned",
+                message: `${employee.name} was assigned a task at ${school.schoolName}.`,
+                type: "System"
+            });
+
+            if (req.io) req.io.to(admin._id.toString()).emit('new_notification', adminNotif);
+        }));
+
+        res.status(200).json({ success: true, message: "Task assigned successfully.", data: populatedTask });
+    } catch (error) {
+        console.error("Assign Task Error:", error);
+        res.status(500).json({ success: false, message: "Server error assigning task." });
+    }
+});
+
+// ==========================================
+// 11. UPDATE TASK
+// ==========================================
+adminRouter.put('/tasks/:taskId', userAuth, adminAuth, async (req, res) => {
+    try {
+        const { taskId } = req.params;
+        const task = await Task.findById(taskId).populate('school').populate('teacher');
+
+        if (!task) return res.status(404).json({ success: false, message: "Task not found." });
+
+        const employee = task.teacher;
+        const schoolName = task.school.schoolName;
+        const taskTitle = `Assignment at ${schoolName}`;
+
+        // Change Tracking Logic
+        const changes = [];
+        const fieldLabels = {
+            taskDescription: "Description",
+            duration: "Duration",
+            timing: "Timing",
+            status: "Updation",
+            daysAllotted: "Days Allotted"
+        };
+
+        Object.keys(req.body).forEach(key => {
+            if (!fieldLabels[key]) return;
+
+            let oldVal = task[key];
+            let newVal = req.body[key];
+
+            // Handle array comparison for 'daysAllotted'
+            if (Array.isArray(oldVal)) {
+                if (oldVal.sort().join(',') !== newVal.sort().join(',')) {
+                    changes.push({
+                        field: fieldLabels[key],
+                        oldValue: oldVal.length > 0 ? oldVal.join(', ') : "None",
+                        newValue: newVal.join(', ')
+                    });
+                }
+            }
+            // Handle standard string comparison
+            else if (oldVal !== newVal) {
+                changes.push({
+                    field: fieldLabels[key],
+                    oldValue: oldVal || 'Not Set',
+                    newValue: newVal || 'Removed'
+                });
+            }
+        });
+
+        if (changes.length === 0) {
+            return res.status(200).json({ success: true, message: "No changes made." });
+        }
+
+        // Apply Updates
+        Object.assign(task, req.body);
+
+        // If admin updates it, and the status isn't rejected, clear the reject reason
+        if (req.body.status && req.body.status !== 'Rejected') {
+            task.rejectReason = null;
+        }
+
+        await task.save();
+
+        // --- NOTIFICATIONS ---
+        const changeSummary = changes.map(c => c.field).join(', ');
+
+        // A. Notify Employee
+        if (employee.preferences?.employeeNotifications !== false) {
+            // Format task object slightly so the email template reads it correctly
+            const formattedTask = {
+                description: task.taskDescription,
+                dueDate: `${task.daysAllotted.join(', ')} (${task.timing})`,
+                status: task.status,
+                rejectionReason: task.rejectReason
+            };
+            sendEmployeeTaskUpdatedEmail(employee.email, employee.name, taskTitle, changes, formattedTask);
+        }
+
+        const empNotif = await Notification.create({
+            recipient: employee._id,
+            title: "Task Updated",
+            message: `Your task at ${schoolName} was updated (${changeSummary}).`,
+            type: "Updation"
+        });
+
+        if (req.io) req.io.to(employee._id.toString()).emit('new_notification', empNotif);
+
+        // B. Notify Admins
+        const admins = await User.find({ role: { $in: ['Admin'] }, _id: { $ne: req.user._id } });
+
+        const detailsHtml = changes.map(c => `
+             <div class="card-item" style="padding-top: 8px; border-top: 1px solid #e4e4e7;">
+                <span class="label">${c.field} Changed</span>
+                <div class="value" style="font-weight: 400; color: #52525b;">From: <span style="text-decoration: line-through;">${c.oldValue}</span></div>
+                <div class="value">To: ${c.newValue}</div>
+             </div>
+        `).join('');
+
+        await Promise.all(admins.map(async (admin) => {
+            if (admin.preferences?.adminNotifications !== false) {
+                sendAdminTaskAuditEmail(admin.email, admin.name, employee.name, taskTitle, "UPDATED", detailsHtml);
+            }
+
+            const adminNotif = await Notification.create({
+                recipient: admin._id,
+                title: "System Alert: Task Updated",
+                message: `${req.user.name} updated a task for ${employee.name}.`,
+                type: "System"
+            });
+
+            if (req.io) req.io.to(admin._id.toString()).emit('new_notification', adminNotif);
+        }));
+
+        res.status(200).json({ success: true, message: "Task updated.", data: task });
+    } catch (error) {
+        console.error("Update Task Error:", error);
+        res.status(500).json({ success: false, message: "Server error updating task." });
+    }
+});
+
+// ==========================================
+// 12. DELETE / REVOKE TASK
+// ==========================================
+adminRouter.delete('/tasks/:taskId', userAuth, adminAuth, async (req, res) => {
+    try {
+        const { taskId } = req.params;
+        const task = await Task.findById(taskId).populate('school').populate('teacher');
+
+        if (!task) return res.status(404).json({ success: false, message: "Task not found." });
+
+        const employee = task.teacher;
+        const taskTitle = `Assignment at ${task.school.schoolName}`;
+
+        // Perform Deletion
+        await Task.findByIdAndDelete(taskId);
+
+        // --- NOTIFICATIONS ---
+
+        // A. Notify Employee
+        if (employee.preferences?.employeeNotifications !== false) {
+            sendEmployeeTaskRevokedEmail(employee.email, employee.name, taskTitle);
+        }
+
+        const empNotif = await Notification.create({
+            recipient: employee._id,
+            title: "Task Revoked",
+            message: `The task "${taskTitle}" has been removed from your schedule.`,
+            type: "System"
+        });
+
+        if (req.io) req.io.to(employee._id.toString()).emit('new_notification', empNotif);
+
+        // B. Notify Admins
+        const admins = await User.find({ role: { $in: ['Admin'] }, _id: { $ne: req.user._id } });
+
+        const detailsHtml = `
+            <div class="card-item"><span class="label" style="color: #dc2626;">Notice</span><div class="value" style="font-weight: 400;">This task was permanently deleted.</div></div>
+        `;
+
+        await Promise.all(admins.map(async (admin) => {
+            if (admin.preferences?.adminNotifications !== false) {
+                sendAdminTaskAuditEmail(admin.email, admin.name, employee.name, taskTitle, "DELETED", detailsHtml);
+            }
+
+            const adminNotif = await Notification.create({
+                recipient: admin._id,
+                title: "System Alert: Task Deleted",
+                message: `${req.user.name} deleted a task for ${employee.name}.`,
+                type: "System"
+            });
+
+            if (req.io) req.io.to(admin._id.toString()).emit('new_notification', adminNotif);
+        }));
+
+        res.status(200).json({ success: true, message: "Task revoked successfully." });
+    } catch (error) {
+        console.error("Delete Task Error:", error);
+        res.status(500).json({ success: false, message: "Server error deleting task." });
+    }
+});
+
 
 module.exports = adminRouter;
