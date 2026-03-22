@@ -4,13 +4,14 @@ const crypto = require('crypto');
 const validator = require('validator');
 const bcrypt = require('bcrypt');
 const adminRouter = express.Router();
-const { sendAdminWelcomeEmail, sendEmployeeWelcomeEmail, sendSchoolAssignmentEmail, sendAdminAssignmentAlertEmail, sendEmployeeAssignmentRevokedEmail, sendAdminAssignmentRevokedEmail, sendEmployeeAssignmentUpdatedEmail, sendAdminAssignmentUpdatedEmail, sendEmployeeProfileUpdatedEmail, sendAdminAuditEmail, sendEmployeeProfileDeletedEmail, sendEmployeeTaskAssignedEmail, sendAdminTaskAuditEmail, sendEmployeeTaskUpdatedEmail, sendEmployeeTaskRevokedEmail } = require('../utils/emailService');
+const { sendAdminWelcomeEmail, sendEmployeeWelcomeEmail, sendSchoolAssignmentEmail, sendAdminAssignmentAlertEmail, sendEmployeeAssignmentRevokedEmail, sendAdminAssignmentRevokedEmail, sendEmployeeAssignmentUpdatedEmail, sendAdminAssignmentUpdatedEmail, sendEmployeeProfileUpdatedEmail, sendAdminAuditEmail, sendEmployeeProfileDeletedEmail, sendEmployeeTaskAssignedEmail, sendAdminTaskAuditEmail, sendEmployeeTaskUpdatedEmail, sendEmployeeTaskRevokedEmail, sendEmployeeWarningEmail, sendAdminWarningAuditEmail } = require('../utils/emailService');
 const adminAuth = require('../middleware/adminAuth');
 const userAuth = require('../middleware/userAuth');
 const requireSuperAdmin = require('../middleware/requireSuperAdmin');
 const School = require('../models/School');
 const Notification = require('../models/Notification');
 const Task = require('../models/Task');
+const Warning = require('../models/Warning');
 
 
 // ==========================================
@@ -179,36 +180,35 @@ adminRouter.get('/roster', userAuth, adminAuth, async (req, res) => {
 // ==========================================
 adminRouter.get('/employees/:id', userAuth, adminAuth, async (req, res) => {
     try {
-        // 1. Fetch the employee and populate their regular school assignments
-        // We use .lean() here so Mongoose returns a plain JavaScript object, 
-        // allowing us to easily attach the tasks array to it in Step 3.
-        const employee = await User.findById(req.params.id)
-            .select('-password')
-            .populate('assignments.school')
-            .lean();
+        const { id } = req.params;
 
-        if (!employee) {
-            return res.status(404).json({ success: false, message: "Employee not found." });
-        }
+        // 1. Fetch the Employee
+        const employee = await User.findById(id);
+        if (!employee) return res.status(404).json({ success: false, message: "Employee not found." });
 
-        // 2. Fetch all tasks assigned to this employee from the separate Task collection.
-        // We MUST populate 'school' here so your TasksTab can display the schoolName and address!
-        const tasks = await Task.find({ teacher: req.params.id })
-            .populate('school')
-            .sort({ createdAt: -1 }); // Sorts by newest first
+        // 2. Fetch their Tasks
+        const tasks = await Task.find({ teacher: id }).populate('school', 'schoolName address');
 
-        // 3. Inject the tasks array into the employee object payload
-        employee.tasks = tasks;
+        // 3. FETCH THEIR WARNINGS (This is the missing piece!)
+        // Make sure to require Warning at the top of your file if you haven't!
+        const warnings = await Warning.find({ teacher: id })
+            .populate('issuedBy', 'name')
+            .sort({ dateIssued: -1 }); // Sorts newest first
 
-        // 4. Send the combined data to the frontend
-        res.status(200).json({ success: true, data: employee });
+        // 4. Combine everything into one object for the frontend
+        const responseData = {
+            ...employee.toObject(),
+            tasks: tasks,
+            warnings: warnings // <--- This sends it to your WarningsTab!
+        };
+
+        res.status(200).json({ success: true, data: responseData });
 
     } catch (error) {
         console.error("Fetch Employee Error:", error);
-        res.status(500).json({ success: false, message: "Server error while fetching employee details." });
+        res.status(500).json({ success: false, message: "Server error fetching employee." });
     }
 });
-
 // ==========================================
 // 5. ASSIGN SCHOOL TO EMPLOYEE
 // ==========================================
@@ -930,6 +930,76 @@ adminRouter.delete('/tasks/:taskId', userAuth, adminAuth, async (req, res) => {
         res.status(500).json({ success: false, message: "Server error deleting task." });
     }
 });
+
+// ==========================================
+// 14. ISSUE WARNING TO EMPLOYEE
+// ==========================================
+adminRouter.post('/employees/:id/warnings', userAuth, adminAuth, async (req, res) => {
+    try {
+        const { id } = req.params; // Employee ID
+        const { level, reason } = req.body; // 'Verbal', 'Written', 'Final'
+
+        // 1. Find employee and validate FIRST
+        const employee = await User.findById(id);
+        if (!employee) return res.status(404).json({ success: false, message: "Employee not found." });
+
+        // 2. Create the Warning Record
+        const newWarning = await Warning.create({
+            teacher: employee._id,
+            issuedBy: req.user._id,
+            level,
+            reason
+        });
+
+        // Optional: Populate the issuer's name so the returned object is complete
+        await newWarning.populate('issuedBy', 'name');
+
+        // ==========================================
+        // BACKGROUND NOTIFICATIONS
+        // ==========================================
+
+        // --- A. Notify Employee ---
+        const empMsg = `You have been issued a ${level} Warning by Administration.`;
+
+        if (employee.preferences?.employeeNotifications !== false) {
+            sendEmployeeWarningEmail(employee.email, employee.name, level, reason, req.user.name);
+        }
+
+        const empNotif = await Notification.create({
+            recipient: employee._id,
+            title: `${level} Warning Issued`,
+            message: empMsg,
+            type: "Warning" // Matches your enum
+        });
+
+        if (req.io) req.io.to(employee._id.toString()).emit('new_notification', empNotif);
+
+        // --- B. Notify Admins (Audit Trail) ---
+        const admins = await User.find({ role: { $in: ['Admin', 'SuperAdmin'] }, _id: { $ne: req.user._id } });
+
+        await Promise.all(admins.map(async (admin) => {
+            if (admin.preferences?.adminNotifications !== false) {
+                sendAdminWarningAuditEmail(admin.email, admin.name, employee.name, level, reason, req.user.name);
+            }
+
+            const adminNotif = await Notification.create({
+                recipient: admin._id,
+                title: "Audit: Warning Issued",
+                message: `${req.user.name} issued a ${level} warning to ${employee.name}.`,
+                type: "System" // Matches your enum
+            });
+
+            if (req.io) req.io.to(admin._id.toString()).emit('new_notification', adminNotif);
+        }));
+
+        res.status(200).json({ success: true, message: "Warning issued successfully.", data: newWarning });
+
+    } catch (error) {
+        console.error("Issue Warning Error:", error);
+        res.status(500).json({ success: false, message: "Server error issuing warning." });
+    }
+});
+
 
 
 module.exports = adminRouter;

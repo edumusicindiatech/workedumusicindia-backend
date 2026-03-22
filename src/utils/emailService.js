@@ -14,6 +14,8 @@ const getEmployeeProfileDeletedTemplate = require('../templates/employeeProfileD
 const { getEmployeeTaskAssignedTemplate, getEmployeeTaskUpdatedTemplate, getEmployeeTaskRevokedTemplate } = require('../templates/employeeTaskEmail');
 const { getAdminTaskAuditTemplate } = require('../templates/adminTaskEmail');
 const getAdminTaskResponseTemplate = require('../templates/adminTaskResponseEmail');
+const getEmployeeWarningTemplate = require('../templates/employeeWarningEmail');
+const getAdminWarningAuditTemplate = require('../templates/adminWarningAuditEmail');
 
 require('dotenv').config();
 
@@ -227,6 +229,28 @@ const sendAdminTaskResponseEmail = async (adminEmail, adminName, employeeName, t
     } catch (e) { console.error("Error sending admin task response email:", e); }
 };
 
+const sendEmployeeWarningEmail = async (email, employeeName, level, reason, issuerName) => {
+    try {
+        await transporter.sendMail({
+            from: process.env.EMAIL_FROM,
+            to: email,
+            subject: `Official Notice: ${level} Warning`,
+            html: getEmployeeWarningTemplate(employeeName, level, reason, issuerName)
+        });
+    } catch (e) { console.error("Employee warning email error:", e); }
+};
+
+const sendAdminWarningAuditEmail = async (adminEmail, adminName, employeeName, level, reason, issuerName) => {
+    try {
+        await transporter.sendMail({
+            from: process.env.EMAIL_FROM,
+            to: adminEmail,
+            subject: `Audit Alert: ${level} Warning Issued`,
+            html: getAdminWarningAuditTemplate(adminName, employeeName, level, reason, issuerName)
+        });
+    } catch (e) { console.error("Admin warning audit email error:", e); }
+};
+
 module.exports = {
     sendAdminWelcomeEmail,
     sendEmployeeWelcomeEmail,
@@ -243,5 +267,7 @@ module.exports = {
     sendEmployeeTaskUpdatedEmail,
     sendEmployeeTaskRevokedEmail,
     sendAdminTaskAuditEmail,
-    sendAdminTaskResponseEmail
+    sendAdminTaskResponseEmail,
+    sendEmployeeWarningEmail,
+    sendAdminWarningAuditEmail
 };
