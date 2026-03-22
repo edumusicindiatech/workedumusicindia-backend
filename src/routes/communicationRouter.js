@@ -5,7 +5,7 @@ const Broadcast = require('../models/Broadcast');
 const Notification = require('../models/Notification');
 const userAuth = require('../middleware/userAuth');
 const adminAuth = require('../middleware/adminAuth');
-const { sendBroadcastEmail } = require('../utils/emailService')
+const { sendBroadcastEmail } = require('../utils/emailService');
 
 // 1. GET ALL EMPLOYEES (For the "Specific People" search dropdown)
 communicationRouter.get('/employees', userAuth, adminAuth, async (req, res) => {
@@ -40,9 +40,10 @@ communicationRouter.post('/send', userAuth, adminAuth, async (req, res) => {
         let recipients = [];
 
         // --- TARGETING LOGIC ---
+        // Notice: We added 'role' and 'preferences' to the select so we can filter emails properly
         if (targetGroup === 'All Employees') {
             // Gets ALL active users (Employees AND Admins as requested)
-            recipients = await User.find({ isActive: true }).select('_id email name');
+            recipients = await User.find({ isActive: true }).select('_id email name role preferences');
         }
         else if (targetGroup === 'By Zone') {
             if (!targetZone) return res.status(400).json({ success: false, message: "Zone is required." });
@@ -57,11 +58,11 @@ communicationRouter.post('/send', userAuth, adminAuth, async (req, res) => {
                 role: 'Employee',
                 isActive: true,
                 zone: { $in: regexZones }
-            }).select('_id email name');
+            }).select('_id email name role preferences');
         }
         else if (targetGroup === 'Specific People') {
             if (!targetUsers || targetUsers.length === 0) return res.status(400).json({ success: false, message: "Please select at least one employee." });
-            recipients = await User.find({ _id: { $in: targetUsers } }).select('_id email name');
+            recipients = await User.find({ _id: { $in: targetUsers } }).select('_id email name role preferences');
         }
 
         if (recipients.length === 0) {
@@ -78,7 +79,7 @@ communicationRouter.post('/send', userAuth, adminAuth, async (req, res) => {
             reachCount: recipients.length
         });
 
-        // --- 2. CREATE IN-APP NOTIFICATIONS ---
+        // --- 2. CREATE IN-APP NOTIFICATIONS (These always send regardless of email settings) ---
         const notificationsToInsert = recipients.map(user => ({
             recipient: user._id,
             title: "📢 Official Broadcast",
@@ -87,12 +88,38 @@ communicationRouter.post('/send', userAuth, adminAuth, async (req, res) => {
         }));
         await Notification.insertMany(notificationsToInsert);
 
-        // --- 3. SEND EMAILS IN BACKGROUND ---
-        // Extract emails (filter out users who might not have an email set, just in case)
-        const recipientEmails = recipients.map(u => u.email).filter(e => e);
+        // --- 3. SEND EMAILS IN BACKGROUND (RESPECTING NOTIFICATION SETTINGS) ---
 
-        // We don't await this so the API responds instantly to the admin UI
-        sendBroadcastEmail(recipientEmails, message, req.user.name).catch(console.error);
+        // A. Get the sending Admin's Master Override Settings
+        const actionAdmin = await User.findById(req.user._id);
+        const adminAllowsEmpEmails = actionAdmin.preferences?.employeeNotifications !== false;
+        const adminAllowsAdminEmails = actionAdmin.preferences?.adminNotifications !== false;
+
+        // B. Filter the recipients list to only include valid, opted-in emails
+        const validEmails = recipients.filter(u => {
+            if (!u.email) return false; // Skip if no email on record
+
+            const isRecipientAdmin = ['Admin', 'SuperAdmin'].includes(u.role);
+
+            // Check 1: Does the recipient personally want emails?
+            const recipientPrefers = isRecipientAdmin
+                ? u.preferences?.adminNotifications !== false
+                : u.preferences?.employeeNotifications !== false;
+
+            if (!recipientPrefers) return false;
+
+            // Check 2: Does the sending Admin's master override allow it?
+            if (isRecipientAdmin && !adminAllowsAdminEmails) return false;
+            if (!isRecipientAdmin && !adminAllowsEmpEmails) return false;
+
+            return true;
+        }).map(u => u.email);
+
+        // C. Send if there are any valid emails left in the list
+        if (validEmails.length > 0) {
+            // We don't await this so the API responds instantly to the admin UI
+            sendBroadcastEmail(validEmails, message, req.user.name).catch(console.error);
+        }
 
         res.json({ success: true, message: "Broadcast sent successfully!", data: newBroadcast });
 

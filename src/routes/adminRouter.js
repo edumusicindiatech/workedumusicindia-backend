@@ -65,8 +65,14 @@ adminRouter.post('/create-admin', userAuth, requireSuperAdmin, async (req, res) 
             }
         );
 
-        const emailSent = await sendAdminWelcomeEmail(email, name, employeeId, password);
-        if (!emailSent) console.warn(`Failed to send welcome email to ${email}`);
+        // Check SuperAdmin's notification preference for sending emails to other Admins (Master Override)
+        const actionAdmin = await User.findById(req.user._id);
+        const adminAllowsAdminEmails = actionAdmin.preferences?.adminNotifications !== false;
+
+        if (adminAllowsAdminEmails) {
+            const emailSent = await sendAdminWelcomeEmail(email, name, employeeId, password);
+            if (!emailSent) console.warn(`Failed to send welcome email to ${email}`);
+        }
 
         res.status(200).json({
             success: true,
@@ -122,8 +128,14 @@ adminRouter.post('/create-employee', userAuth, adminAuth, async (req, res) => {
             }
         );
 
-        const emailSent = await sendEmployeeWelcomeEmail(email, name, generatedEmployeeId, defaultPassword);
-        if (!emailSent) console.warn(`Failed to send welcome email to ${email}`);
+        // PRIORITY CHECK: Does the Admin allow employee emails to go out?
+        const actionAdmin = await User.findById(req.user._id);
+        const adminAllowsEmpEmails = actionAdmin.preferences?.employeeNotifications !== false;
+
+        if (adminAllowsEmpEmails) {
+            const emailSent = await sendEmployeeWelcomeEmail(email, name, generatedEmployeeId, defaultPassword);
+            if (!emailSent) console.warn(`Failed to send welcome email to ${email}`);
+        }
 
         res.status(200).json({
             success: true,
@@ -225,7 +237,12 @@ adminRouter.post('/employees/:id/assign-school', userAuth, adminAuth, async (req
 
         const empMsg = `You have been assigned to ${school.schoolName} for the ${category} shift starting ${startDate}.`;
 
-        if (employee.preferences?.employeeNotifications !== false) {
+        // PRIORITY CHECK: Both Admin and Employee must allow the email
+        const actionAdmin = await User.findById(req.user._id);
+        const adminAllowsEmpEmails = actionAdmin.preferences?.employeeNotifications !== false;
+        const empAllowsEmails = employee.preferences?.employeeNotifications !== false;
+
+        if (adminAllowsEmpEmails && empAllowsEmails) {
             sendSchoolAssignmentEmail(employee.email, employee.name, school.schoolName, school.address, category, startDate, startTime)
                 .catch(e => console.error("Employee email failed", e));
         }
@@ -360,7 +377,12 @@ adminRouter.put('/employees/:empId/assignments/:assignmentId', userAuth, adminAu
             });
         }
 
-        if (employee.preferences?.employeeNotifications !== false) {
+        // PRIORITY CHECK: Both Admin and Employee must allow the email
+        const actionAdmin = await User.findById(req.user._id);
+        const adminAllowsEmpEmails = actionAdmin.preferences?.employeeNotifications !== false;
+        const empAllowsEmails = employee.preferences?.employeeNotifications !== false;
+
+        if (adminAllowsEmpEmails && empAllowsEmails) {
             sendEmployeeAssignmentUpdatedEmail(
                 employee.email,
                 employee.name,
@@ -440,7 +462,12 @@ adminRouter.delete('/employees/:empId/assignments/:assignmentId', userAuth, admi
             req.io.to(employee._id.toString()).emit('new_notification', { _id: empNotification._id, title: "Assignment Revoked", message: empMsg, timestamp: new Date() });
         }
 
-        if (employee.preferences?.employeeNotifications !== false) {
+        // PRIORITY CHECK
+        const actionAdmin = await User.findById(req.user._id);
+        const adminAllowsEmpEmails = actionAdmin.preferences?.employeeNotifications !== false;
+        const empAllowsEmails = employee.preferences?.employeeNotifications !== false;
+
+        if (adminAllowsEmpEmails && empAllowsEmails) {
             sendEmployeeAssignmentRevokedEmail(employee.email, employee.name, schoolName, schoolAddress, category).catch(console.error);
         }
 
@@ -504,7 +531,15 @@ adminRouter.put('/employees/:id', userAuth, adminAuth, async (req, res) => {
                 timestamp: userNotif.createdAt
             });
         }
-        sendEmployeeProfileUpdatedEmail(targetUser.email, targetUser.name).catch(console.error);
+
+        // PRIORITY CHECK
+        const actionAdmin = await User.findById(req.user._id);
+        const adminAllowsEmpEmails = actionAdmin.preferences?.employeeNotifications !== false;
+        const targetAllowsEmails = targetUser.preferences?.employeeNotifications !== false;
+
+        if (adminAllowsEmpEmails && targetAllowsEmails) {
+            sendEmployeeProfileUpdatedEmail(targetUser.email, targetUser.name).catch(console.error);
+        }
 
         const admins = await User.find({
             role: { $in: ['Admin'] },
@@ -559,11 +594,18 @@ adminRouter.delete('/employees/:id', userAuth, adminAuth, async (req, res) => {
 
         const deletedName = userToDelete.name;
         const deletedEmail = userToDelete.email;
+        const deletedUserPref = userToDelete.preferences?.employeeNotifications !== false;
+
+        // PRIORITY CHECK
+        const actionAdmin = await User.findById(req.user._id);
+        const adminAllowsEmpEmails = actionAdmin.preferences?.employeeNotifications !== false;
 
         await User.findByIdAndDelete(id);
         await Notification.deleteMany({ recipient: id });
 
-        sendEmployeeProfileDeletedEmail(deletedEmail, deletedName).catch(console.error);
+        if (adminAllowsEmpEmails && deletedUserPref) {
+            sendEmployeeProfileDeletedEmail(deletedEmail, deletedName).catch(console.error);
+        }
 
         const admins = await User.find({
             role: { $in: ['Admin'] },
@@ -634,7 +676,12 @@ adminRouter.post('/employees/:id/assign-task', userAuth, adminAuth, async (req, 
         const taskTitle = `Assignment at ${school.schoolName}`;
         const scheduleString = `${daysAllotted.join(', ')} (${timing})`;
 
-        if (employee.preferences?.employeeNotifications !== false) {
+        // PRIORITY CHECK
+        const actionAdmin = await User.findById(req.user._id);
+        const adminAllowsEmpEmails = actionAdmin.preferences?.employeeNotifications !== false;
+        const empAllowsEmails = employee.preferences?.employeeNotifications !== false;
+
+        if (adminAllowsEmpEmails && empAllowsEmails) {
             sendEmployeeTaskAssignedEmail(employee.email, employee.name, taskTitle, taskDescription, scheduleString, category);
         }
 
@@ -737,7 +784,12 @@ adminRouter.put('/tasks/:taskId', userAuth, adminAuth, async (req, res) => {
 
         const changeSummary = changes.map(c => c.field).join(', ');
 
-        if (employee.preferences?.employeeNotifications !== false) {
+        // PRIORITY CHECK
+        const actionAdmin = await User.findById(req.user._id);
+        const adminAllowsEmpEmails = actionAdmin.preferences?.employeeNotifications !== false;
+        const empAllowsEmails = employee.preferences?.employeeNotifications !== false;
+
+        if (adminAllowsEmpEmails && empAllowsEmails) {
             const formattedTask = {
                 description: task.taskDescription,
                 dueDate: `${task.daysAllotted.join(', ')} (${task.timing})`,
@@ -803,7 +855,12 @@ adminRouter.delete('/tasks/:taskId', userAuth, adminAuth, async (req, res) => {
 
         await Task.findByIdAndDelete(taskId);
 
-        if (employee.preferences?.employeeNotifications !== false) {
+        // PRIORITY CHECK
+        const actionAdmin = await User.findById(req.user._id);
+        const adminAllowsEmpEmails = actionAdmin.preferences?.employeeNotifications !== false;
+        const empAllowsEmails = employee.preferences?.employeeNotifications !== false;
+
+        if (adminAllowsEmpEmails && empAllowsEmails) {
             sendEmployeeTaskRevokedEmail(employee.email, employee.name, taskTitle);
         }
 
@@ -866,7 +923,12 @@ adminRouter.post('/employees/:id/warnings', userAuth, adminAuth, async (req, res
 
         const empMsg = `You have been issued a ${level} Warning by Administration.`;
 
-        if (employee.preferences?.employeeNotifications !== false) {
+        // PRIORITY CHECK
+        const actionAdmin = await User.findById(req.user._id);
+        const adminAllowsEmpEmails = actionAdmin.preferences?.employeeNotifications !== false;
+        const empAllowsEmails = employee.preferences?.employeeNotifications !== false;
+
+        if (adminAllowsEmpEmails && empAllowsEmails) {
             sendEmployeeWarningEmail(employee.email, employee.name, level, reason, req.user.name);
         }
 
@@ -911,16 +973,13 @@ adminRouter.get('/employees/:id/attendance', userAuth, adminAuth, async (req, re
     try {
         const { id } = req.params;
 
-        // 1. Check if employee exists
         const employee = await User.findById(id);
         if (!employee) return res.status(404).json({ success: false, message: "Employee not found." });
 
-        // 2. Fetch all attendance records for this employee, populated with School info
         const attendances = await Attendance.find({ teacher: id })
             .populate('school', 'schoolName')
             .sort({ date: -1 });
 
-        // 3. The Aggregation Maps
         const monthMap = new Map();
 
         const formatTime = (dateString) => {
@@ -928,20 +987,16 @@ adminRouter.get('/employees/:id/attendance', userAuth, adminAuth, async (req, re
             return new Date(dateString).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
         };
 
-        // 4. Process each record and build the drill-down hierarchy
         attendances.forEach(att => {
-            // FIX: Gracefully handle missing/deleted schools instead of skipping!
             const schoolName = att.school ? att.school.schoolName : "Unknown/Deleted School";
             const schoolId = att.school ? att.school._id.toString() : "deleted-school";
 
-            // A. Date Parsing for "March 2026"
             const dateObj = new Date(att.date);
             const year = dateObj.getFullYear();
             const monthName = dateObj.toLocaleString('en-US', { month: 'long' });
-            const monthKey = `${year}-${dateObj.getMonth() + 1}`; // e.g. "2026-3"
+            const monthKey = `${year}-${dateObj.getMonth() + 1}`;
             const formattedMonth = `${monthName} ${year}`;
 
-            // B. Initialize Month Level
             if (!monthMap.has(monthKey)) {
                 monthMap.set(monthKey, {
                     id: monthKey,
@@ -951,17 +1006,15 @@ adminRouter.get('/employees/:id/attendance', userAuth, adminAuth, async (req, re
             }
             const monthObj = monthMap.get(monthKey);
 
-            // C. Initialize School Level
             if (!monthObj.schoolsMap.has(schoolId)) {
                 monthObj.schoolsMap.set(schoolId, {
                     id: schoolId,
-                    name: schoolName, // Uses our safe fallback above
+                    name: schoolName,
                     categoriesMap: new Map()
                 });
             }
             const schoolObj = monthObj.schoolsMap.get(schoolId);
 
-            // D. Initialize Category (Band) Level
             const categoryName = att.band || "Uncategorized";
             const categoryId = `${schoolId}-${categoryName}`;
 
@@ -976,7 +1029,6 @@ adminRouter.get('/employees/:id/attendance', userAuth, adminAuth, async (req, re
             }
             const catObj = schoolObj.categoriesMap.get(categoryId);
 
-            // E. Calculate Metrics
             catObj.recordCount++;
             const statusUpper = (att.status || "UNKNOWN").toUpperCase();
             if (statusUpper === 'PRESENT') catObj.metrics.present++;
@@ -985,13 +1037,11 @@ adminRouter.get('/employees/:id/attendance', userAuth, adminAuth, async (req, re
             else if (statusUpper === 'HOLIDAY') catObj.metrics.holidays++;
             else if (statusUpper === 'EVENT') catObj.metrics.events++;
 
-            // F. Format the Record Object for the UI
             const dayName = dateObj.toLocaleString('en-US', { weekday: 'short' });
             const dayNum = dateObj.getDate().toString().padStart(2, '0');
             const shortMonth = dateObj.toLocaleString('en-US', { month: 'short' });
 
             const formattedDate = `${shortMonth} ${dayNum}, ${year} (${dayName})`;
-
             const displayNote = att.teacherNote || att.lateReason || att.eventNote || null;
 
             catObj.records.push({
@@ -1002,11 +1052,13 @@ adminRouter.get('/employees/:id/attendance', userAuth, adminAuth, async (req, re
                 checkIn: formatTime(att.checkInTime),
                 checkOut: formatTime(att.checkOutTime),
                 hasReport: !!att.dailyReport,
+                dailyReport: att.dailyReport,
+                teacherNote: att.teacherNote,
+                lateReason: att.lateReason,
                 note: displayNote ? `"${displayNote}"` : null
             });
         });
 
-        // 5. Convert all Maps back to Arrays so JSON can serialize them
         const hierarchicalData = Array.from(monthMap.values()).map(m => ({
             id: m.id,
             month: m.month,
@@ -1122,6 +1174,34 @@ adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
     } catch (error) {
         console.error("Dashboard Stats Error:", error);
         res.status(500).json({ success: false, message: "Error fetching dashboard data" });
+    }
+});
+
+// ==========================================
+// 18. UPDATE ACCOUNT SETTINGS (NEW ROUTE)
+// ==========================================
+adminRouter.put('/settings/preferences', userAuth, async (req, res) => {
+    try {
+        const { systemLanguage, adminNotifications, employeeNotifications } = req.body;
+
+        const user = await User.findById(req.user._id);
+        if (!user) return res.status(404).json({ success: false, message: "User not found" });
+
+        // Update the preferences based on the payload from your UI modal
+        if (systemLanguage !== undefined) user.preferences.systemLanguage = systemLanguage;
+        if (adminNotifications !== undefined) user.preferences.adminNotifications = adminNotifications;
+        if (employeeNotifications !== undefined) user.preferences.employeeNotifications = employeeNotifications;
+
+        await user.save();
+
+        res.status(200).json({
+            success: true,
+            message: "Preferences updated successfully.",
+            preferences: user.preferences
+        });
+    } catch (error) {
+        console.error("Update Preferences Error:", error);
+        res.status(500).json({ success: false, message: "Server error updating preferences." });
     }
 });
 
