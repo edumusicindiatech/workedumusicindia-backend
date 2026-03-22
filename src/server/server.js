@@ -11,6 +11,7 @@ const employeeRouter = require('../routes/employeeRouter');
 const adminRouter = require('../routes/adminRouter');
 const startShiftWarningCron = require('../jobs/shiftWarningCron');
 const notificationRouter = require('../routes/notificationRouter');
+const communicationRouter = require('../routes/communicationRouter');
 
 const app = express();
 const server = http.createServer(app);
@@ -48,6 +49,7 @@ app.use('/api/auth', authRouter);
 app.use('/api/admin', adminRouter);
 app.use('/api/employee', employeeRouter);
 app.use('/api/admin/notifications', notificationRouter);
+app.use('/api/admin/communication', communicationRouter);
 
 const PORT = process.env.PORT || 5000;
 

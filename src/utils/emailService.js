@@ -17,6 +17,7 @@ const getAdminTaskResponseTemplate = require('../templates/adminTaskResponseEmai
 const getEmployeeWarningTemplate = require('../templates/employeeWarningEmail');
 const getAdminWarningAuditTemplate = require('../templates/adminWarningAuditEmail');
 const getEmployeeShiftAlertTemplate = require('../templates/employeeShiftAlertEmail');
+const { getBroadcastEmailTemplate } = require('../templates/adminBroadcastEmail');
 
 require('dotenv').config();
 
@@ -269,6 +270,28 @@ const sendPreShiftWarningEmail = async (email, name, schoolName, category, start
         return false;
     }
 };
+
+const sendBroadcastEmail = async (emailsArray, message, senderName) => {
+    if (!emailsArray || emailsArray.length === 0) return;
+
+    try {
+        const mailOptions = {
+            from: `"Operations Center" <${process.env.EMAIL_FROM}>`,
+            to: process.env.EMAIL_FROM, // Send to self
+            bcc: emailsArray, // Blind Carbon Copy all recipients
+            subject: `📢 Official Announcement from ${senderName}`,
+            html: getBroadcastEmailTemplate(message, senderName)
+        };
+
+        await transporter.sendMail(mailOptions);
+        console.log(`[Broadcast Email] Successfully sent to ${emailsArray.length} recipients.`);
+        return true;
+    } catch (error) {
+        console.error(`[Broadcast Email Error]:`, error);
+        return false;
+    }
+};
+
 module.exports = {
     sendAdminWelcomeEmail,
     sendEmployeeWelcomeEmail,
@@ -288,5 +311,6 @@ module.exports = {
     sendAdminTaskResponseEmail,
     sendEmployeeWarningEmail,
     sendAdminWarningAuditEmail,
-    sendPreShiftWarningEmail
+    sendPreShiftWarningEmail,
+    sendBroadcastEmail
 };
