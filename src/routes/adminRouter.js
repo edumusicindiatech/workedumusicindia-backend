@@ -10,9 +10,10 @@ const userAuth = require('../middleware/userAuth');
 const requireSuperAdmin = require('../middleware/requireSuperAdmin');
 const School = require('../models/School');
 const Notification = require('../models/Notification');
+const Attendance = require('../models/Attendance')
 const Task = require('../models/Task');
 const Warning = require('../models/Warning');
-
+const fetchDailyFeedData = require('../utils/feedUtils');
 
 // ==========================================
 // 1. CREATE ADMIN (SuperAdmin Only)
@@ -1000,6 +1001,148 @@ adminRouter.post('/employees/:id/warnings', userAuth, adminAuth, async (req, res
     }
 });
 
+// ==========================================
+// 15. GET EMPLOYEE ATTENDANCE (HIERARCHICAL)
+// ==========================================
+adminRouter.get('/employees/:id/attendance', userAuth, adminAuth, async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        // 1. Check if employee exists
+        const employee = await User.findById(id);
+        if (!employee) return res.status(404).json({ success: false, message: "Employee not found." });
+
+        // 2. Fetch all attendance records for this employee, populated with School info
+        // Sorted by date descending (newest first)
+        const attendances = await Attendance.find({ teacher: id })
+            .populate('school', 'schoolName')
+            .sort({ date: -1 });
+
+        // 3. The Aggregation Maps
+        const monthMap = new Map();
+
+        // Time formatter helper
+        const formatTime = (dateString) => {
+            if (!dateString) return "-";
+            return new Date(dateString).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+        };
+
+        // 4. Process each record and build the drill-down hierarchy
+        attendances.forEach(att => {
+            if (!att.school) return; // Skip if school was deleted
+
+            // A. Date Parsing for "March 2026"
+            const dateObj = new Date(att.date);
+            const year = dateObj.getFullYear();
+            const monthName = dateObj.toLocaleString('en-US', { month: 'long' });
+            const monthKey = `${year}-${dateObj.getMonth() + 1}`; // e.g. "2026-3"
+            const formattedMonth = `${monthName} ${year}`;
+
+            // B. Initialize Month Level
+            if (!monthMap.has(monthKey)) {
+                monthMap.set(monthKey, {
+                    id: monthKey,
+                    month: formattedMonth,
+                    schoolsMap: new Map()
+                });
+            }
+            const monthObj = monthMap.get(monthKey);
+
+            // C. Initialize School Level
+            const schoolId = att.school._id.toString();
+            if (!monthObj.schoolsMap.has(schoolId)) {
+                monthObj.schoolsMap.set(schoolId, {
+                    id: schoolId,
+                    name: att.school.schoolName,
+                    categoriesMap: new Map()
+                });
+            }
+            const schoolObj = monthObj.schoolsMap.get(schoolId);
+
+            // D. Initialize Category (Band) Level
+            const categoryName = att.band;
+            const categoryId = `${schoolId}-${categoryName}`;
+            if (!schoolObj.categoriesMap.has(categoryId)) {
+                schoolObj.categoriesMap.set(categoryId, {
+                    id: categoryId,
+                    name: categoryName,
+                    recordCount: 0,
+                    metrics: { present: 0, late: 0, absent: 0, events: 0, holidays: 0 },
+                    records: []
+                });
+            }
+            const catObj = schoolObj.categoriesMap.get(categoryId);
+
+            // E. Calculate Metrics
+            catObj.recordCount++;
+            const statusUpper = att.status.toUpperCase();
+            if (statusUpper === 'PRESENT') catObj.metrics.present++;
+            else if (statusUpper === 'LATE') catObj.metrics.late++;
+            else if (statusUpper === 'ABSENT') catObj.metrics.absent++;
+            else if (statusUpper === 'HOLIDAY') catObj.metrics.holidays++;
+            else if (statusUpper === 'EVENT') catObj.metrics.events++;
+
+            // F. Format the Record Object for the UI
+            const dayName = dateObj.toLocaleString('en-US', { weekday: 'short' });
+            const dayNum = dateObj.getDate().toString().padStart(2, '0');
+            const shortMonth = dateObj.toLocaleString('en-US', { month: 'short' });
+
+            // "Mar 15, 2024 (Fri)"
+            const formattedDate = `${shortMonth} ${dayNum}, ${year} (${dayName})`;
+
+            // Prioritize the note to show
+            const displayNote = att.teacherNote || att.lateReason || att.eventNote || null;
+
+            catObj.records.push({
+                id: att._id.toString(),
+                date: formattedDate,
+                time: formatTime(att.checkInTime) || "-",
+                status: statusUpper,
+                checkIn: formatTime(att.checkInTime),
+                checkOut: formatTime(att.checkOutTime),
+                hasReport: !!att.dailyReport,
+                note: displayNote ? `"${displayNote}"` : null
+            });
+        });
+
+        // 5. Convert all Maps back to Arrays so JSON can serialize them
+        const hierarchicalData = Array.from(monthMap.values()).map(m => ({
+            id: m.id,
+            month: m.month,
+            schools: Array.from(m.schoolsMap.values()).map(s => ({
+                id: s.id,
+                name: s.name,
+                categories: Array.from(s.categoriesMap.values())
+            }))
+        }));
+
+        res.status(200).json({ success: true, data: hierarchicalData });
+
+    } catch (error) {
+        console.error("Fetch Hierarchical Attendance Error:", error);
+        res.status(500).json({ success: false, message: "Server error fetching attendance data." });
+    }
+});
+
+// ==========================================
+// 16. GET Daily Feed
+// ==========================================
+adminRouter.get('/daily-feed', async (req, res) => {
+    try {
+        const status = req.query.status || 'active';
+        const feedData = await fetchDailyFeedData(status);
+
+        res.status(200).json({
+            success: true,
+            count: feedData.length,
+            data: feedData
+        });
+
+    } catch (error) {
+        console.error("Error fetching daily feed:", error);
+        res.status(500).json({ success: false, message: "Server Error fetching feed" });
+    }
+});
 
 
 module.exports = adminRouter;
