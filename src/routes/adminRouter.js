@@ -16,6 +16,33 @@ const Warning = require('../models/Warning');
 const fetchDailyFeedData = require('../utils/feedUtils');
 
 // ==========================================
+// EMAIL GATEKEEPER HELPER
+// ==========================================
+// This guarantees that BOTH the Admin's Master Override and the 
+// Target User's Personal Settings are respected before sending an email.
+const canSendEmailToUser = (actionAdminDoc, targetUserDoc) => {
+    if (!actionAdminDoc || !targetUserDoc) return true; // Default to send if context is missing
+
+    const isTargetAdmin = ['Admin', 'SuperAdmin'].includes(targetUserDoc.role);
+
+    // 1. Check the Action Admin's Master Switches
+    const masterSwitch = isTargetAdmin
+        ? actionAdminDoc.preferences?.adminNotifications
+        : actionAdminDoc.preferences?.employeeNotifications;
+
+    // 2. Check the Target User's Personal Switches
+    const targetSwitch = isTargetAdmin
+        ? targetUserDoc.preferences?.adminNotifications
+        : targetUserDoc.preferences?.employeeNotifications;
+
+    // 3. Bulletproof evaluation (Handles cases where DB contains string "false" by mistake)
+    const masterAllows = (masterSwitch === false || masterSwitch === 'false') ? false : true;
+    const targetAllows = (targetSwitch === false || targetSwitch === 'false') ? false : true;
+
+    return masterAllows && targetAllows;
+};
+
+// ==========================================
 // 1. CREATE ADMIN (SuperAdmin Only)
 // ==========================================
 adminRouter.post('/create-admin', userAuth, requireSuperAdmin, async (req, res) => {
@@ -65,11 +92,9 @@ adminRouter.post('/create-admin', userAuth, requireSuperAdmin, async (req, res) 
             }
         );
 
-        // Check SuperAdmin's notification preference for sending emails to other Admins (Master Override)
         const actionAdmin = await User.findById(req.user._id);
-        const adminAllowsAdminEmails = actionAdmin.preferences?.adminNotifications !== false;
 
-        if (adminAllowsAdminEmails) {
+        if (canSendEmailToUser(actionAdmin, adminUser)) {
             const emailSent = await sendAdminWelcomeEmail(email, name, employeeId, password);
             if (!emailSent) console.warn(`Failed to send welcome email to ${email}`);
         }
@@ -128,11 +153,9 @@ adminRouter.post('/create-employee', userAuth, adminAuth, async (req, res) => {
             }
         );
 
-        // PRIORITY CHECK: Does the Admin allow employee emails to go out?
         const actionAdmin = await User.findById(req.user._id);
-        const adminAllowsEmpEmails = actionAdmin.preferences?.employeeNotifications !== false;
 
-        if (adminAllowsEmpEmails) {
+        if (canSendEmailToUser(actionAdmin, employeeUser)) {
             const emailSent = await sendEmployeeWelcomeEmail(email, name, generatedEmployeeId, defaultPassword);
             if (!emailSent) console.warn(`Failed to send welcome email to ${email}`);
         }
@@ -236,13 +259,9 @@ adminRouter.post('/employees/:id/assign-school', userAuth, adminAuth, async (req
         await employee.save();
 
         const empMsg = `You have been assigned to ${school.schoolName} for the ${category} shift starting ${startDate}.`;
-
-        // PRIORITY CHECK: Both Admin and Employee must allow the email
         const actionAdmin = await User.findById(req.user._id);
-        const adminAllowsEmpEmails = actionAdmin.preferences?.employeeNotifications !== false;
-        const empAllowsEmails = employee.preferences?.employeeNotifications !== false;
 
-        if (adminAllowsEmpEmails && empAllowsEmails) {
+        if (canSendEmailToUser(actionAdmin, employee)) {
             sendSchoolAssignmentEmail(employee.email, employee.name, school.schoolName, school.address, category, startDate, startTime)
                 .catch(e => console.error("Employee email failed", e));
         }
@@ -271,7 +290,7 @@ adminRouter.post('/employees/:id/assign-school', userAuth, adminAuth, async (req
         const adminMsg = `${employee.name} has been assigned to ${school.schoolName} (${category}).`;
 
         await Promise.all(admins.map(async (admin) => {
-            if (admin.preferences?.adminNotifications !== false) {
+            if (canSendEmailToUser(actionAdmin, admin)) {
                 sendAdminAssignmentAlertEmail(admin.email, admin.name, employee.name, school.schoolName, school.address, category, startDate)
                     .catch(e => console.error("Admin email failed", e));
             }
@@ -377,12 +396,9 @@ adminRouter.put('/employees/:empId/assignments/:assignmentId', userAuth, adminAu
             });
         }
 
-        // PRIORITY CHECK: Both Admin and Employee must allow the email
         const actionAdmin = await User.findById(req.user._id);
-        const adminAllowsEmpEmails = actionAdmin.preferences?.employeeNotifications !== false;
-        const empAllowsEmails = employee.preferences?.employeeNotifications !== false;
 
-        if (adminAllowsEmpEmails && empAllowsEmails) {
+        if (canSendEmailToUser(actionAdmin, employee)) {
             sendEmployeeAssignmentUpdatedEmail(
                 employee.email,
                 employee.name,
@@ -417,7 +433,7 @@ adminRouter.put('/employees/:empId/assignments/:assignmentId', userAuth, adminAu
                 });
             }
 
-            if (admin.preferences?.adminNotifications !== false) {
+            if (canSendEmailToUser(actionAdmin, admin)) {
                 sendAdminAssignmentUpdatedEmail(
                     admin.email,
                     admin.name,
@@ -462,12 +478,9 @@ adminRouter.delete('/employees/:empId/assignments/:assignmentId', userAuth, admi
             req.io.to(employee._id.toString()).emit('new_notification', { _id: empNotification._id, title: "Assignment Revoked", message: empMsg, timestamp: new Date() });
         }
 
-        // PRIORITY CHECK
         const actionAdmin = await User.findById(req.user._id);
-        const adminAllowsEmpEmails = actionAdmin.preferences?.employeeNotifications !== false;
-        const empAllowsEmails = employee.preferences?.employeeNotifications !== false;
 
-        if (adminAllowsEmpEmails && empAllowsEmails) {
+        if (canSendEmailToUser(actionAdmin, employee)) {
             sendEmployeeAssignmentRevokedEmail(employee.email, employee.name, schoolName, schoolAddress, category).catch(console.error);
         }
 
@@ -479,7 +492,7 @@ adminRouter.delete('/employees/:empId/assignments/:assignmentId', userAuth, admi
             if (req.io) {
                 req.io.to(admin._id.toString()).emit('new_notification', { _id: adminNotif._id, title: adminNotif.title, message: adminNotif.message, timestamp: new Date() });
             }
-            if (admin.preferences?.adminNotifications !== false) {
+            if (canSendEmailToUser(actionAdmin, admin)) {
                 sendAdminAssignmentRevokedEmail(admin.email, admin.name, employee.name, schoolName, schoolAddress, category).catch(console.error);
             }
         }));
@@ -532,12 +545,9 @@ adminRouter.put('/employees/:id', userAuth, adminAuth, async (req, res) => {
             });
         }
 
-        // PRIORITY CHECK
         const actionAdmin = await User.findById(req.user._id);
-        const adminAllowsEmpEmails = actionAdmin.preferences?.employeeNotifications !== false;
-        const targetAllowsEmails = targetUser.preferences?.employeeNotifications !== false;
 
-        if (adminAllowsEmpEmails && targetAllowsEmails) {
+        if (canSendEmailToUser(actionAdmin, targetUser)) {
             sendEmployeeProfileUpdatedEmail(targetUser.email, targetUser.name).catch(console.error);
         }
 
@@ -558,7 +568,7 @@ adminRouter.put('/employees/:id', userAuth, adminAuth, async (req, res) => {
                 req.io.to(admin._id.toString()).emit('new_notification', auditNotif);
             }
 
-            if (admin.preferences?.adminNotifications !== false) {
+            if (canSendEmailToUser(actionAdmin, admin)) {
                 sendAdminAuditEmail(admin.email, targetUser.name, "UPDATED", req.user.name).catch(console.error);
             }
         }));
@@ -594,16 +604,14 @@ adminRouter.delete('/employees/:id', userAuth, adminAuth, async (req, res) => {
 
         const deletedName = userToDelete.name;
         const deletedEmail = userToDelete.email;
-        const deletedUserPref = userToDelete.preferences?.employeeNotifications !== false;
 
-        // PRIORITY CHECK
         const actionAdmin = await User.findById(req.user._id);
-        const adminAllowsEmpEmails = actionAdmin.preferences?.employeeNotifications !== false;
+        const shouldNotifyDeletedUser = canSendEmailToUser(actionAdmin, userToDelete);
 
         await User.findByIdAndDelete(id);
         await Notification.deleteMany({ recipient: id });
 
-        if (adminAllowsEmpEmails && deletedUserPref) {
+        if (shouldNotifyDeletedUser) {
             sendEmployeeProfileDeletedEmail(deletedEmail, deletedName).catch(console.error);
         }
 
@@ -624,7 +632,7 @@ adminRouter.delete('/employees/:id', userAuth, adminAuth, async (req, res) => {
                 req.io.to(admin._id.toString()).emit('new_notification', deleteNotif);
             }
 
-            if (admin.preferences?.adminNotifications !== false) {
+            if (canSendEmailToUser(actionAdmin, admin)) {
                 sendAdminAuditEmail(admin.email, deletedName, "DELETED", req.user.name).catch(console.error);
             }
         }));
@@ -676,12 +684,9 @@ adminRouter.post('/employees/:id/assign-task', userAuth, adminAuth, async (req, 
         const taskTitle = `Assignment at ${school.schoolName}`;
         const scheduleString = `${daysAllotted.join(', ')} (${timing})`;
 
-        // PRIORITY CHECK
         const actionAdmin = await User.findById(req.user._id);
-        const adminAllowsEmpEmails = actionAdmin.preferences?.employeeNotifications !== false;
-        const empAllowsEmails = employee.preferences?.employeeNotifications !== false;
 
-        if (adminAllowsEmpEmails && empAllowsEmails) {
+        if (canSendEmailToUser(actionAdmin, employee)) {
             sendEmployeeTaskAssignedEmail(employee.email, employee.name, taskTitle, taskDescription, scheduleString, category);
         }
 
@@ -702,7 +707,7 @@ adminRouter.post('/employees/:id/assign-task', userAuth, adminAuth, async (req, 
         `;
 
         await Promise.all(admins.map(async (admin) => {
-            if (admin.preferences?.adminNotifications !== false) {
+            if (canSendEmailToUser(actionAdmin, admin)) {
                 sendAdminTaskAuditEmail(admin.email, admin.name, employee.name, taskTitle, "ASSIGNED", detailsHtml);
             }
 
@@ -783,13 +788,9 @@ adminRouter.put('/tasks/:taskId', userAuth, adminAuth, async (req, res) => {
         await task.save();
 
         const changeSummary = changes.map(c => c.field).join(', ');
-
-        // PRIORITY CHECK
         const actionAdmin = await User.findById(req.user._id);
-        const adminAllowsEmpEmails = actionAdmin.preferences?.employeeNotifications !== false;
-        const empAllowsEmails = employee.preferences?.employeeNotifications !== false;
 
-        if (adminAllowsEmpEmails && empAllowsEmails) {
+        if (canSendEmailToUser(actionAdmin, employee)) {
             const formattedTask = {
                 description: task.taskDescription,
                 dueDate: `${task.daysAllotted.join(', ')} (${task.timing})`,
@@ -819,7 +820,7 @@ adminRouter.put('/tasks/:taskId', userAuth, adminAuth, async (req, res) => {
         `).join('');
 
         await Promise.all(admins.map(async (admin) => {
-            if (admin.preferences?.adminNotifications !== false) {
+            if (canSendEmailToUser(actionAdmin, admin)) {
                 sendAdminTaskAuditEmail(admin.email, admin.name, employee.name, taskTitle, "UPDATED", detailsHtml);
             }
 
@@ -855,12 +856,9 @@ adminRouter.delete('/tasks/:taskId', userAuth, adminAuth, async (req, res) => {
 
         await Task.findByIdAndDelete(taskId);
 
-        // PRIORITY CHECK
         const actionAdmin = await User.findById(req.user._id);
-        const adminAllowsEmpEmails = actionAdmin.preferences?.employeeNotifications !== false;
-        const empAllowsEmails = employee.preferences?.employeeNotifications !== false;
 
-        if (adminAllowsEmpEmails && empAllowsEmails) {
+        if (canSendEmailToUser(actionAdmin, employee)) {
             sendEmployeeTaskRevokedEmail(employee.email, employee.name, taskTitle);
         }
 
@@ -880,7 +878,7 @@ adminRouter.delete('/tasks/:taskId', userAuth, adminAuth, async (req, res) => {
         `;
 
         await Promise.all(admins.map(async (admin) => {
-            if (admin.preferences?.adminNotifications !== false) {
+            if (canSendEmailToUser(actionAdmin, admin)) {
                 sendAdminTaskAuditEmail(admin.email, admin.name, employee.name, taskTitle, "DELETED", detailsHtml);
             }
 
@@ -922,13 +920,9 @@ adminRouter.post('/employees/:id/warnings', userAuth, adminAuth, async (req, res
         await newWarning.populate('issuedBy', 'name');
 
         const empMsg = `You have been issued a ${level} Warning by Administration.`;
-
-        // PRIORITY CHECK
         const actionAdmin = await User.findById(req.user._id);
-        const adminAllowsEmpEmails = actionAdmin.preferences?.employeeNotifications !== false;
-        const empAllowsEmails = employee.preferences?.employeeNotifications !== false;
 
-        if (adminAllowsEmpEmails && empAllowsEmails) {
+        if (canSendEmailToUser(actionAdmin, employee)) {
             sendEmployeeWarningEmail(employee.email, employee.name, level, reason, req.user.name);
         }
 
@@ -944,7 +938,7 @@ adminRouter.post('/employees/:id/warnings', userAuth, adminAuth, async (req, res
         const admins = await User.find({ role: { $in: ['Admin', 'SuperAdmin'] }, _id: { $ne: req.user._id } });
 
         await Promise.all(admins.map(async (admin) => {
-            if (admin.preferences?.adminNotifications !== false) {
+            if (canSendEmailToUser(actionAdmin, admin)) {
                 sendAdminWarningAuditEmail(admin.email, admin.name, employee.name, level, reason, req.user.name);
             }
 
@@ -1184,15 +1178,19 @@ adminRouter.put('/settings/preferences', userAuth, async (req, res) => {
     try {
         const { systemLanguage, adminNotifications, employeeNotifications } = req.body;
 
-        const user = await User.findById(req.user._id);
+        // Use $set to strictly bypass any Mongoose nested-object tracking issues
+        const updateData = {};
+        if (systemLanguage !== undefined) updateData['preferences.systemLanguage'] = systemLanguage;
+        if (adminNotifications !== undefined) updateData['preferences.adminNotifications'] = adminNotifications;
+        if (employeeNotifications !== undefined) updateData['preferences.employeeNotifications'] = employeeNotifications;
+
+        const user = await User.findByIdAndUpdate(
+            req.user._id,
+            { $set: updateData },
+            { returnDocument: 'after' }
+        );
+
         if (!user) return res.status(404).json({ success: false, message: "User not found" });
-
-        // Update the preferences based on the payload from your UI modal
-        if (systemLanguage !== undefined) user.preferences.systemLanguage = systemLanguage;
-        if (adminNotifications !== undefined) user.preferences.adminNotifications = adminNotifications;
-        if (employeeNotifications !== undefined) user.preferences.employeeNotifications = employeeNotifications;
-
-        await user.save();
 
         res.status(200).json({
             success: true,
