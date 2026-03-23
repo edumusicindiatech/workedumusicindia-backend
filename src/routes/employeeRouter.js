@@ -53,7 +53,9 @@ const notifyAdminsInApp = async (req, title, message, type = "System") => {
 // ==========================================
 employeeRouter.get('/me/profile', userAuth, async (req, res) => {
     try {
-        const user = await User.findById(req.user._id).select('-password');
+        const user = await User.findById(req.user._id)
+            .select('-password')
+            .populate('assignments.school', 'schoolName address location');
         if (!user) {
             return res.status(404).json({ success: false, message: "User account no longer exists." });
         }
@@ -69,7 +71,8 @@ employeeRouter.get('/me/profile', userAuth, async (req, res) => {
                 mobile: user.mobile,
                 zone: user.zone,
                 isFirstLogin: user.isFirstLogin,
-                preferences: user.preferences
+                preferences: user.preferences,
+                assignments: user.assignments
             }
         });
     } catch (error) {
