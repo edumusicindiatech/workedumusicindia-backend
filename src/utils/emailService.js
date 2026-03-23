@@ -256,7 +256,7 @@ const sendAdminWarningAuditEmail = async (adminEmail, adminName, employeeName, l
 const sendPreShiftWarningEmail = async (email, name, schoolName, category, startTime) => {
     try {
         const mailOptions = {
-            from: `"Operations Center" <${process.env.EMAIL_USER}>`, // Update to match your setup
+            from: `"Operations Center" <${process.env.EMAIL_FROM}>`, // Update to match your setup
             to: email,
             subject: `Action Required: Shift at ${schoolName} starts in 15 mins`,
             html: getEmployeeShiftAlertTemplate(name, schoolName, category, startTime)

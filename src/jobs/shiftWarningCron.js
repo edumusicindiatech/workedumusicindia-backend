@@ -10,7 +10,7 @@ const getTimeAndDateContext = (minutesToAdd = 0) => {
     const d = new Date();
     d.setMinutes(d.getMinutes() + minutesToAdd);
 
-    // Get Date: YYYY-MM-DD (Using India timezone based on your location context)
+    // Get Date: YYYY-MM-DD 
     const dateFormatter = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' });
     const dateString = dateFormatter.format(d);
 
@@ -18,15 +18,14 @@ const getTimeAndDateContext = (minutesToAdd = 0) => {
     const dayFormatter = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', weekday: 'short' });
     const currentDayName = dayFormatter.format(d);
 
-    // Get Time: "08:00 AM" (Manually constructed to strictly match your DB format)
-    let h = d.getHours();
-    let m = d.getMinutes();
-    const ampm = h >= 12 ? 'PM' : 'AM';
-    h = h % 12;
-    h = h ? h : 12; // 0 should be 12
-    const hStr = h < 10 ? '0' + h : h;
-    const mStr = m < 10 ? '0' + m : m;
-    const targetTimeStr = `${hStr}:${mStr} ${ampm}`;
+    // Get Time: "HH:MM" in 24-hour format to match your database!
+    const timeFormatter = new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'Asia/Kolkata',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false // Forces 24-hour format
+    });
+    const targetTimeStr = timeFormatter.format(d); // Outputs "08:00", "14:30", etc.
 
     return { dateString, currentDayName, targetTimeStr };
 };

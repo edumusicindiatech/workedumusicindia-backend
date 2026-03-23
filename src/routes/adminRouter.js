@@ -207,7 +207,7 @@ adminRouter.get('/employees/:id', userAuth, adminAuth, async (req, res) => {
     try {
         const { id } = req.params;
 
-        const employee = await User.findById(id);
+        const employee = await User.findById(id).populate('assignments.school');
         if (!employee) return res.status(404).json({ success: false, message: "Employee not found." });
 
         const tasks = await Task.find({ teacher: id }).populate('school', 'schoolName address');
@@ -1202,5 +1202,7 @@ adminRouter.put('/settings/preferences', userAuth, async (req, res) => {
         res.status(500).json({ success: false, message: "Server error updating preferences." });
     }
 });
+
+
 
 module.exports = adminRouter;
