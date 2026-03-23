@@ -462,7 +462,6 @@ employeeRouter.get('/assigned-schools', userAuth, async (req, res) => {
                 if (statusUpper === 'ABSENT') stats.absent++;
                 if (statusUpper === 'EVENT') stats.events++;
 
-                // Format date nicely (e.g., "Mar 19, 2026")
                 const d = new Date(a.date);
                 const formattedDate = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 
