@@ -14,6 +14,7 @@ const Attendance = require('../models/Attendance')
 const Task = require('../models/Task');
 const Warning = require('../models/Warning');
 const fetchDailyFeedData = require('../utils/feedUtils');
+const DailyReport = require('../models/DailyReports')
 
 // ==========================================
 // EMAIL GATEKEEPER HELPER
