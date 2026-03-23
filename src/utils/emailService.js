@@ -18,6 +18,10 @@ const getEmployeeWarningTemplate = require('../templates/employeeWarningEmail');
 const getAdminWarningAuditTemplate = require('../templates/adminWarningAuditEmail');
 const getEmployeeShiftAlertTemplate = require('../templates/employeeShiftAlertEmail');
 const { getBroadcastEmailTemplate } = require('../templates/adminBroadcastEmail');
+const getAdminCheckInEmailTemplate = require('../templates/adminCheckinEmail');
+const getAdminCheckOutEmailTemplate = require('../templates/adminCheckOutEmail');
+const getAdminStatusAlertEmailTemplate = require('../templates/adminStatusAlertEmail');
+const getAdminAutoAbsentEmailTemplate = require('../templates/adminAutoAbsentEmail');
 
 require('dotenv').config();
 
@@ -292,6 +296,50 @@ const sendBroadcastEmail = async (emailsArray, message, senderName) => {
     }
 };
 
+const sendAdminCheckInAlert = async (adminEmail, adminName, employeeName, schoolName, category, scheduledTime, checkInTime, status, lateReason, eventNote) => {
+    try {
+        await transporter.sendMail({
+            from: process.env.EMAIL_FROM,
+            to: adminEmail,
+            subject: `[Check-In] ${employeeName} at ${schoolName}`,
+            html: getAdminCheckInEmailTemplate(adminName, employeeName, schoolName, category, scheduledTime, checkInTime, status, lateReason, eventNote)
+        });
+    } catch (e) { console.error("CheckIn Email Error:", e); }
+};
+
+const sendAdminCheckOutAlert = async (adminEmail, adminName, employeeName, schoolName, category, checkOutTime, overtimeReason) => {
+    try {
+        await transporter.sendMail({
+            from: process.env.EMAIL_FROM,
+            to: adminEmail,
+            subject: `[Check-Out] ${employeeName} completed ${schoolName}`,
+            html: getAdminCheckOutEmailTemplate(adminName, employeeName, schoolName, category, checkOutTime, overtimeReason)
+        });
+    } catch (e) { console.error("CheckOut Email Error:", e); }
+};
+
+const sendAdminStatusAlert = async (adminEmail, adminName, employeeName, schoolName, category, status, reason) => {
+    try {
+        await transporter.sendMail({
+            from: process.env.EMAIL_FROM,
+            to: adminEmail,
+            subject: `[Status: ${status}] ${employeeName}`,
+            html: getAdminStatusAlertEmailTemplate(adminName, employeeName, schoolName, category, status, reason)
+        });
+    } catch (e) { console.error("Status Alert Email Error:", e); }
+};
+
+const sendAdminAutoAbsentAlert = async (adminEmail, adminName, employeeName, schoolName, category, scheduledTime) => {
+    try {
+        await transporter.sendMail({
+            from: process.env.EMAIL_FROM,
+            to: adminEmail,
+            subject: `🚨 [CRITICAL: Auto-Absent] ${employeeName}`,
+            html: getAdminAutoAbsentEmailTemplate(adminName, employeeName, schoolName, category, scheduledTime)
+        });
+    } catch (e) { console.error("AutoAbsent Email Error:", e); }
+};
+
 module.exports = {
     sendAdminWelcomeEmail,
     sendEmployeeWelcomeEmail,
@@ -312,5 +360,9 @@ module.exports = {
     sendEmployeeWarningEmail,
     sendAdminWarningAuditEmail,
     sendPreShiftWarningEmail,
-    sendBroadcastEmail
+    sendBroadcastEmail,
+    sendAdminCheckInAlert,
+    sendAdminCheckOutAlert,
+    sendAdminStatusAlert,
+    sendAdminAutoAbsentAlert
 };

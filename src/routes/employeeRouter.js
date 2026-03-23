@@ -5,28 +5,58 @@ const getCityFromCoordinates = require('../utils/getCityFromCoords');
 const Attendance = require('../models/Attendance');
 const User = require('../models/User');
 const Task = require('../models/Task');
-const { sendAdminTaskAuditEmail, sendAdminTaskResponseEmail } = require('../utils/emailService');
 const Notification = require('../models/Notification');
+
+// Import all specific email templates
+const {
+    sendAdminTaskResponseEmail,
+    sendAdminCheckInAlert,
+    sendAdminCheckOutAlert,
+    sendAdminStatusAlert
+} = require('../utils/emailService');
+const Media = require('../models/Media');
+const DailyReports = require('../models/DailyReports');
+
 const employeeRouter = express.Router();
 
+// ==========================================
+// HELPERS
+// ==========================================
+
+// Convert "08:00 AM" to today's Date object for time math
+const getScheduledDate = (timeStr) => {
+    const now = new Date();
+    const [time, modifier] = timeStr.split(' ');
+    let [hours, minutes] = time.split(':');
+    hours = parseInt(hours, 10);
+    if (hours === 12) hours = 0;
+    if (modifier === 'PM') hours += 12;
+    now.setHours(hours, parseInt(minutes, 10), 0, 0);
+    return now;
+};
+
+// Handles In-App Notifications & Sockets, and returns the list of admins 
+// so we can loop through them to send specific emails.
+const notifyAdminsInApp = async (req, title, message, type = "System") => {
+    const admins = await User.find({ role: { $in: ['Admin'] } });
+
+    await Promise.all(admins.map(async (admin) => {
+        const notif = await Notification.create({ recipient: admin._id, title, message, type });
+        if (req.io) req.io.to(admin._id.toString()).emit('new_notification', notif);
+    }));
+
+    return admins; // Return the admins array to process emails sequentially
+};
 
 // ==========================================
-// GET CURRENT USER PROFILE (Redux Hydration)
+// 1. GET CURRENT USER PROFILE (Redux Hydration)
 // ==========================================
-// Matches frontend: api.get('/employee/me/profile')
 employeeRouter.get('/me/profile', userAuth, async (req, res) => {
     try {
-        // req.user._id is automatically provided by your userAuth middleware
         const user = await User.findById(req.user._id).select('-password');
-
         if (!user) {
-            return res.status(404).json({
-                success: false,
-                message: "User account no longer exists."
-            });
+            return res.status(404).json({ success: false, message: "User account no longer exists." });
         }
-
-        // Return the exact object structure your Redux store expects
         res.status(200).json({
             success: true,
             user: {
@@ -42,290 +72,36 @@ employeeRouter.get('/me/profile', userAuth, async (req, res) => {
                 preferences: user.preferences
             }
         });
-
     } catch (error) {
         console.error("Profile Fetch Error:", error);
-        res.status(500).json({
-            success: false,
-            message: "Server error while fetching profile data."
-        });
+        res.status(500).json({ success: false, message: "Server error while fetching profile data." });
     }
 });
 
-// GET: Reverse Geocode Proxy (Bypasses CORS for the frontend)
+// ==========================================
+// 2. GET REVERSE GEOCODE PROXY
+// ==========================================
 employeeRouter.get('/get-city', userAuth, async (req, res) => {
     try {
         const { lat, lng } = req.query;
-
-        if (!lat || !lng) {
-            return res.status(400).json({ success: false, message: "Latitude and longitude are required." });
-        }
-
+        if (!lat || !lng) return res.status(400).json({ success: false, message: "Latitude and longitude required." });
         const city = await getCityFromCoordinates(lat, lng);
-
         res.status(200).json({ success: true, city });
     } catch (error) {
         res.status(500).json({ success: false, message: "Error fetching city." });
     }
 });
 
-// POST: Employee Check-In
-employeeRouter.post('/check-in', userAuth, async (req, res) => {
-    try {
-        const { schoolId, band, latitude, longitude, lateReason, eventNote, eventDate } = req.body;
-        const employeeId = req.user._id;
-
-        // 1. GEOSPATIAL VERIFICATION
-        // Use $nearSphere on the School collection to find the school ONLY if it's within 100m
-        const schoolInRadius = await School.findOne({
-            _id: schoolId,
-            location: {
-                $nearSphere: {
-                    $geometry: {
-                        type: "Point",
-                        coordinates: [parseFloat(longitude), parseFloat(latitude)] // [lng, lat]
-                    },
-                    $maxDistance: 100 // 100 meters
-                }
-            }
-        });
-
-        if (!schoolInRadius) {
-            return res.status(400).json({
-                success: false,
-                message: "Check-in failed. You must be within 100 meters of the school."
-            });
-        }
-
-        // 2. FETCH ASSIGNMENT FOR TIME CHECK
-        const user = await User.findById(employeeId);
-        const assignment = user.assignments.find(
-            a => a.school.toString() === schoolId && a.category === band
-        );
-
-        // 3. DETERMINE STATUS (Late vs Present)
-        const now = new Date();
-        const [time, modifier] = assignment.startTime.split(' ');
-        let [hours, minutes] = time.split(':');
-        if (hours === '12') hours = '00';
-        if (modifier === 'PM') hours = parseInt(hours, 10) + 12;
-
-        const scheduledStart = new Date(now);
-        scheduledStart.setHours(hours, minutes, 0, 0);
-
-        let status = 'Present';
-        if (now.getTime() > (scheduledStart.getTime() + (5 * 60000))) {
-            status = 'Late';
-            if (!lateReason) {
-                return res.status(400).json({ success: false, message: "Late reason is required." });
-            }
-        }
-
-        const todayString = now.toISOString().split('T')[0];
-
-        // 4. CREATE ATTENDANCE (No daily report here)
-        const newAttendance = await Attendance.create({
-            teacher: employeeId,
-            school: schoolId,
-            band: band,
-            date: todayString,
-            status: status,
-            checkInTime: now,
-            checkInCoordinates: [longitude, latitude],
-            lateReason: lateReason || null,
-            eventNote: eventNote || null,
-            eventDate: eventDate || null
-        });
-
-        res.status(200).json({ success: true, message: `Checked in as ${status}`, data: newAttendance });
-
-    } catch (error) {
-        console.error("Check-in Error:", error);
-        res.status(500).json({ success: false, message: "Server error during check-in" });
-    }
-});
-
-// POST: Employee Check-Out
-employeeRouter.post('/check-out', userAuth, async (req, res) => {
-    try {
-        // MATCHING YOUR FRONTEND PAYLOAD:
-        const { schoolId, band, latitude, longitude, overtimeReason, dailyReport } = req.body;
-        const employeeId = req.user._id;
-
-        const now = new Date();
-        const todayString = now.toISOString().split('T')[0];
-
-        const attendanceRecord = await Attendance.findOne({
-            teacher: employeeId, school: schoolId, band: band, date: todayString
-        });
-
-        if (!attendanceRecord || attendanceRecord.checkOutTime) {
-            return res.status(400).json({ success: false, message: "Invalid check-out request." });
-        }
-
-        // Apply data from React modals
-        attendanceRecord.checkOutTime = now;
-        if (latitude && longitude) attendanceRecord.checkOutCoordinates = [longitude, latitude];
-        if (overtimeReason) attendanceRecord.overtimeReason = overtimeReason;
-        if (dailyReport) attendanceRecord.dailyReport = dailyReport;
-
-        await attendanceRecord.save();
-
-        res.status(200).json({ success: true, data: attendanceRecord });
-
-    } catch (error) {
-        res.status(500).json({ success: false, message: "Server error during check-out" });
-    }
-});
-
-// POST: Mark Assignment as Absent or Holiday
-employeeRouter.post('/mark-status', userAuth, async (req, res) => {
-    try {
-        const { schoolId, band, status, reason } = req.body;
-        const employeeId = req.user._id;
-
-        // Ensure they only send valid statuses for this route
-        if (!['Absent', 'Holiday'].includes(status)) {
-            return res.status(400).json({ success: false, message: "Invalid status type." });
-        }
-
-        // 1. Determine "Today"
-        const now = new Date();
-        const todayString = now.toISOString().split('T')[0];
-
-        // 2. Check if a record already exists (maybe they checked in earlier!)
-        const existingRecord = await Attendance.findOne({
-            teacher: employeeId,
-            school: schoolId,
-            band: band,
-            date: todayString
-        });
-
-        if (existingRecord) {
-            return res.status(400).json({
-                success: false,
-                message: `Cannot mark ${status}. You already have a record for this assignment today.`
-            });
-        }
-
-        // 3. Create the 'Absent' or 'Holiday' Record
-        const newRecord = await Attendance.create({
-            teacher: employeeId,
-            school: schoolId,
-            band: band,
-            date: todayString,
-            status: status, // 'Absent' or 'Holiday'
-            teacherNote: reason || "", // The text from the modal!
-
-            // Note: We leave checkInTime and checkOutTime blank 
-            // because they never actually went to the school.
-        });
-
-        res.status(200).json({
-            success: true,
-            message: `Successfully marked as ${status}.`,
-            data: newRecord
-        });
-
-    } catch (error) {
-        console.error("Mark Status Error:", error);
-        res.status(500).json({ success: false, message: "Server error while updating status" });
-    }
-});
-
-// POST: Global "Day Absent" or "Day Holiday"
-employeeRouter.post('/mark-day-status', userAuth, async (req, res) => {
-    try {
-        const { status, reason } = req.body;
-        const employeeId = req.user._id;
-
-        if (!['Absent', 'Holiday'].includes(status)) {
-            return res.status(400).json({ success: false, message: "Invalid status type." });
-        }
-
-        // 1. Get Today's Date and Day of the Week (e.g., "Mon", "Tue")
-        const now = new Date();
-        const todayString = now.toISOString().split('T')[0];
-        const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-        const todayDayOfWeek = days[now.getDay()];
-
-        // 2. Fetch the User and their Assignments
-        const user = await User.findById(employeeId);
-        if (!user || !user.assignments || user.assignments.length === 0) {
-            return res.status(400).json({ success: false, message: "No assignments found for this user." });
-        }
-
-        // 3. Filter assignments to ONLY find the ones scheduled for TODAY
-        const todaysAssignments = user.assignments.filter(assignment =>
-            assignment.allowedDays.includes(todayDayOfWeek)
-        );
-
-        if (todaysAssignments.length === 0) {
-            return res.status(400).json({ success: false, message: "You have no schools scheduled for today." });
-        }
-
-        // 4. Check which assignments ALREADY have an attendance record today
-        // (e.g., if they went to 1 school in the morning, but went home sick for the rest)
-        const existingRecords = await Attendance.find({
-            teacher: employeeId,
-            date: todayString
-        });
-
-        // Create a lookup for easy matching
-        const existingKeys = existingRecords.map(r => `${r.school.toString()}-${r.band}`);
-
-        // 5. Prepare the new bulk records
-        const recordsToCreate = [];
-
-        todaysAssignments.forEach(assignment => {
-            const assignmentKey = `${assignment.school.toString()}-${assignment.category}`;
-
-            // Only create an 'Absent' record if they haven't already checked in/out of this specific one today
-            if (!existingKeys.includes(assignmentKey)) {
-                recordsToCreate.push({
-                    teacher: employeeId,
-                    school: assignment.school,
-                    band: assignment.category,
-                    date: todayString,
-                    status: status, // 'Absent' or 'Holiday'
-                    teacherNote: reason || "Marked globally via Day Absent feature"
-                });
-            }
-        });
-
-        // 6. Bulk Insert into the Database
-        if (recordsToCreate.length > 0) {
-            await Attendance.insertMany(recordsToCreate);
-        }
-
-        res.status(200).json({
-            success: true,
-            message: `Successfully marked ${recordsToCreate.length} remaining assignments as ${status} for today.`,
-            data: recordsToCreate
-        });
-
-    } catch (error) {
-        console.error("Global Day Status Error:", error);
-        res.status(500).json({ success: false, message: "Server error while marking day status" });
-    }
-});
-
-// GET: Fetch Employee's Daily Schedule
+// ==========================================
+// 3. GET SCHEDULE (Filtered & Sorted)
+// ==========================================
 employeeRouter.get('/my-schedule', userAuth, async (req, res) => {
     try {
         const employeeId = req.user._id;
-
-        // 1. Grab Live GPS from Query Params (e.g., /my-schedule?lat=26.2&lng=82.0)
-        const { lat, lng } = req.query;
-        const userLocation = (lat && lng) ? [parseFloat(lng), parseFloat(lat)] : null;
-
-        // 2. Setup Time & Date
         const now = new Date();
         const todayString = now.toISOString().split('T')[0];
-        const daysMap = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-        const todayDayOfWeek = daysMap[now.getDay()];
+        const todayDayOfWeek = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][now.getDay()];
 
-        // 3. Fetch User with populated School details
         const user = await User.findById(employeeId).populate({
             path: 'assignments.school',
             select: 'schoolName address location'
@@ -333,146 +109,265 @@ employeeRouter.get('/my-schedule', userAuth, async (req, res) => {
 
         if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
-        // 4. Filter for today's assigned schools only
-        const todaysAssignments = user.assignments.filter(a =>
-            a.allowedDays.includes(todayDayOfWeek)
-        );
+        const todaysLogs = await Attendance.find({ teacher: employeeId, date: todayString });
 
-        // 5. Fetch all Attendance Logs already created today
-        const todaysLogs = await Attendance.find({
-            teacher: employeeId,
-            date: todayString
-        });
+        let activeAssignments = [];
 
-        // 6. Process Assignments into Dashboard Cards
-        const processedVisits = await Promise.all(todaysAssignments.map(async (assignment) => {
+        user.assignments.forEach(assignment => {
+            if (!assignment.allowedDays.includes(todayDayOfWeek)) return;
 
-            // Check if a log exists for this specific school + category
             const log = todaysLogs.find(l =>
-                l.school.toString() === assignment.school._id.toString() &&
-                l.band === assignment.category
+                l.school.toString() === assignment.school._id.toString() && l.band === assignment.category
             );
 
-            // --- DISTANCE CALCULATION (MongoDB Way) ---
-            let distanceStr = "---";
-            if (userLocation) {
-                // Correct MongoDB Aggregation: $geoNear MUST be the first stage!
-                const distanceInMeters = await School.aggregate([
-                    {
-                        $geoNear: {
-                            near: { type: "Point", coordinates: userLocation },
-                            distanceField: "dist",
-                            spherical: true,
-                            query: { _id: assignment.school._id } // <-- The fix is right here
-                        }
-                    }
-                ]);
+            // Hide completed shifts or marked absences/holidays
+            if (log && (log.checkOutTime || ['Absent', 'Holiday'].includes(log.status))) return;
 
-                if (distanceInMeters.length > 0) {
-                    const km = distanceInMeters[0].dist / 1000;
-                    distanceStr = `${km.toFixed(1)} km`;
-                }
-            }
-
-            // --- TIME & STATE CALCULATION ---
-            let uiStatus = "pending";
+            let uiStatus = log ? "checked_in" : "pending";
             let minutesLate = 0;
             let overtimeMinutes = 0;
 
-            if (log) {
-                if (log.status === 'Absent') uiStatus = "absent";
-                else if (log.status === 'Holiday') uiStatus = "holiday";
-                else if (log.checkInTime && !log.checkOutTime) uiStatus = "checked_in";
-                else if (log.checkInTime && log.checkOutTime) uiStatus = "completed";
+            const scheduledStart = getScheduledDate(assignment.startTime);
+            const scheduledEnd = getScheduledDate(assignment.endTime);
+
+            if (uiStatus === "pending" && now > scheduledStart) {
+                minutesLate = Math.floor((now - scheduledStart) / 60000);
+            } else if (uiStatus === "checked_in" && now > scheduledEnd) {
+                overtimeMinutes = Math.floor((now - scheduledEnd) / 60000);
             }
 
-            // Helper to get diff between "now" and a time string "08:00 AM"
-            const getTimeDiff = (timeStr) => {
-                const [time, mod] = timeStr.split(' ');
-                let [h, m] = time.split(':');
-                if (h === '12') h = '00';
-                if (mod === 'PM') h = parseInt(h) + 12;
-                const d = new Date(now);
-                d.setHours(h, m, 0, 0);
-                return Math.floor((now - d) / 60000);
-            };
-
-            if (uiStatus === "pending") {
-                minutesLate = getTimeDiff(assignment.startTime);
-            } else if (uiStatus === "checked_in") {
-                overtimeMinutes = getTimeDiff(assignment.endTime);
-            }
-
-            // --- RETURN OBJECT (Matches your React state perfectly) ---
-            return {
+            activeAssignments.push({
                 id: `${assignment.school._id}-${assignment.category}`,
                 schoolId: assignment.school._id,
                 schoolName: assignment.school.schoolName,
-                category: assignment.category,
                 address: assignment.school.address,
-                scheduledTime: assignment.startTime,
-                scheduledEndTime: assignment.endTime,
+                category: assignment.category,
+                startTime: assignment.startTime,
+                endTime: assignment.endTime,
+                coordinates: assignment.school.location.coordinates, // [lng, lat] for maps
                 status: uiStatus,
-                distance: distanceStr,
-                minutesLate: minutesLate > 0 ? minutesLate : 0,
-                overtimeMinutes: overtimeMinutes > 0 ? overtimeMinutes : 0,
-                attendanceId: log ? log._id : null
-            };
-        }));
-
-        // 7. Sort by Scheduled Time (Soonest first)
-        const timeToNum = (t) => {
-            const [time, mod] = t.split(' ');
-            let [h, m] = time.split(':');
-            h = parseInt(h);
-            if (h === 12) h = 0;
-            if (mod === 'PM') h += 12;
-            return h * 60 + parseInt(m);
-        };
-
-        processedVisits.sort((a, b) => timeToNum(a.scheduledTime) - timeToNum(b.scheduledTime));
-
-        res.status(200).json({
-            success: true,
-            data: processedVisits,
-            stats: {
-                total: processedVisits.length,
-                pending: processedVisits.filter(v => v.status === 'pending' || v.status === 'checked_in').length
-            }
+                minutesLate,
+                overtimeMinutes
+            });
         });
 
+        // Sort by Scheduled Time (Earliest first)
+        activeAssignments.sort((a, b) => getScheduledDate(a.startTime) - getScheduledDate(b.startTime));
+
+        res.status(200).json({ success: true, data: activeAssignments });
     } catch (error) {
-        console.error("Dashboard Fetch Error:", error);
-        res.status(500).json({ success: false, message: "Error loading dashboard" });
+        console.error("Schedule Error:", error);
+        res.status(500).json({ success: false, message: "Error loading schedule" });
     }
 });
 
-// PUT : Change the Response of the Task
+// ==========================================
+// 4. CHECK-IN (100m Geofence)
+// ==========================================
+employeeRouter.post('/check-in', userAuth, async (req, res) => {
+    try {
+        const { schoolId, band, latitude, longitude, lateReason, eventNote } = req.body;
+        const employee = await User.findById(req.user._id);
+
+        const school = await School.findOne({
+            _id: schoolId,
+            location: {
+                $nearSphere: {
+                    $geometry: { type: "Point", coordinates: [parseFloat(longitude), parseFloat(latitude)] },
+                    $maxDistance: 100
+                }
+            }
+        });
+
+        if (!school) return res.status(403).json({ success: false, message: "Check-in failed. You are not within 100 meters of the school." });
+
+        let status = 'Present';
+        if (lateReason) status = 'Late';
+        if (eventNote) status = 'Event';
+
+        await Attendance.create({
+            teacher: employee._id,
+            school: school._id,
+            band: band,
+            date: new Date().toISOString().split('T')[0],
+            checkInTime: new Date(),
+            status,
+            lateReason: lateReason || null,
+            eventNote: eventNote || null,
+            checkInCoordinates: [longitude, latitude]
+        });
+
+        const assignment = employee.assignments.find(a => a.school.toString() === schoolId && a.category === band);
+        const checkInTimeStr = new Date().toLocaleTimeString('en-US');
+
+        // Notify Admins
+        const admins = await notifyAdminsInApp(req, `Live Check-In: ${employee.name}`, `${employee.name} checked in at ${school.schoolName}`, status === 'Late' ? "Warning" : "System");
+
+        for (const admin of admins) {
+            if (admin.preferences?.adminNotifications !== false) {
+                await sendAdminCheckInAlert(
+                    admin.email, admin.name, employee.name, school.schoolName, band,
+                    assignment?.startTime || 'N/A', checkInTimeStr, status, lateReason, eventNote
+                );
+            }
+        }
+
+        res.status(200).json({ success: true, message: "Checked in successfully." });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ success: false, message: "Server error during check-in" });
+    }
+});
+
+// ==========================================
+// 5. CHECK-OUT (100m Geofence & Overtime)
+// ==========================================
+employeeRouter.post('/check-out', userAuth, async (req, res) => {
+    try {
+        const { schoolId, band, latitude, longitude, overtimeReason } = req.body;
+        const employee = await User.findById(req.user._id);
+
+        const school = await School.findOne({
+            _id: schoolId,
+            location: {
+                $nearSphere: { $geometry: { type: "Point", coordinates: [parseFloat(longitude), parseFloat(latitude)] }, $maxDistance: 100 }
+            }
+        });
+
+        if (!school) return res.status(403).json({ success: false, message: "You must be within 100 meters to check out." });
+
+        const todayString = new Date().toISOString().split('T')[0];
+        const record = await Attendance.findOne({ teacher: employee._id, school: schoolId, band, date: todayString, checkOutTime: null });
+
+        if (!record) return res.status(400).json({ success: false, message: "No active check-in found." });
+
+        record.checkOutTime = new Date();
+        record.overtimeReason = overtimeReason || null;
+        record.checkOutCoordinates = [longitude, latitude];
+        await record.save();
+
+        const checkOutTimeStr = new Date().toLocaleTimeString('en-US');
+
+        // Notify Admins
+        const admins = await notifyAdminsInApp(req, `Check-Out: ${employee.name}`, `${employee.name} checked out of ${school.schoolName}`, overtimeReason ? "Warning" : "System");
+
+        for (const admin of admins) {
+            if (admin.preferences?.adminNotifications !== false) {
+                await sendAdminCheckOutAlert(
+                    admin.email, admin.name, employee.name, school.schoolName, band,
+                    checkOutTimeStr, overtimeReason
+                );
+            }
+        }
+
+        res.status(200).json({ success: true, message: "Checked out successfully." });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ success: false, message: "Server error during check-out" });
+    }
+});
+
+// ==========================================
+// 6. MARK STATUS (Absent / Holiday)
+// ==========================================
+employeeRouter.post('/mark-status', userAuth, async (req, res) => {
+    try {
+        const { schoolId, band, status, reason } = req.body;
+        const employee = await User.findById(req.user._id);
+        const school = await School.findById(schoolId);
+
+        await Attendance.create({
+            teacher: employee._id, school: schoolId, band,
+            date: new Date().toISOString().split('T')[0],
+            status: status, teacherNote: reason || "Marked from Dashboard"
+        });
+
+        // Notify Admins
+        const admins = await notifyAdminsInApp(req, `${status} Alert: ${employee.name}`, `${employee.name} marked ${status} for ${school.schoolName}`, "Warning");
+
+        for (const admin of admins) {
+            if (admin.preferences?.adminNotifications !== false) {
+                await sendAdminStatusAlert(admin.email, admin.name, employee.name, school.schoolName, band, status, reason);
+            }
+        }
+
+        res.status(200).json({ success: true, message: `Marked as ${status}.` });
+    } catch (error) {
+        res.status(500).json({ success: false, message: "Server error." });
+    }
+});
+
+// ==========================================
+// 7. GLOBAL DAY ABSENT / HOLIDAY
+// ==========================================
+employeeRouter.post('/mark-day-status', userAuth, async (req, res) => {
+    try {
+        const { status, reason } = req.body;
+        const employeeId = req.user._id;
+        const employee = await User.findById(employeeId).populate('assignments.school');
+
+        const now = new Date();
+        const todayString = now.toISOString().split('T')[0];
+        const todayDayOfWeek = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][now.getDay()];
+
+        const todaysAssignments = employee.assignments.filter(a => a.allowedDays.includes(todayDayOfWeek));
+        const existingRecords = await Attendance.find({ teacher: employeeId, date: todayString });
+        const existingKeys = existingRecords.map(r => `${r.school.toString()}-${r.band}`);
+
+        const recordsToCreate = [];
+        let schoolsList = [];
+
+        todaysAssignments.forEach(a => {
+            if (!existingKeys.includes(`${a.school._id}-${a.category}`)) {
+                recordsToCreate.push({
+                    teacher: employeeId, school: a.school._id, band: a.category,
+                    date: todayString, status, teacherNote: reason || "Global Day Status"
+                });
+                schoolsList.push(`${a.school.schoolName} (${a.category})`);
+            }
+        });
+
+        if (recordsToCreate.length > 0) {
+            await Attendance.insertMany(recordsToCreate);
+
+            // Notify Admins
+            const admins = await notifyAdminsInApp(req, `Global ${status}: ${employee.name}`, `${employee.name} declared full day ${status}`, "Warning");
+            for (const admin of admins) {
+                if (admin.preferences?.adminNotifications !== false) {
+                    await sendAdminStatusAlert(admin.email, admin.name, employee.name, "All Remaining Schools", "N/A", status, reason);
+                }
+            }
+        }
+
+        res.status(200).json({ success: true, message: `All remaining shifts marked as ${status}.` });
+    } catch (error) {
+        res.status(500).json({ success: false, message: "Server error." });
+    }
+});
+
+// ==========================================
+// 8. PUT : Change the Response of the Task
+// ==========================================
 employeeRouter.put('/tasks/:taskId/respond', userAuth, async (req, res) => {
     try {
         const { taskId } = req.params;
-        const { status, rejectReason } = req.body; // 'Accepted' or 'Rejected'
+        const { status, rejectReason } = req.body;
 
         const task = await Task.findById(taskId).populate('school');
         if (!task) return res.status(404).json({ success: false, message: "Task not found" });
 
-        // Ensure the teacher responding is the one assigned to the task
         if (task.teacher.toString() !== req.user._id.toString()) {
             return res.status(403).json({ success: false, message: "Unauthorized" });
         }
 
-        // 1. Update Task Status
         task.status = status;
         if (status === 'Rejected') {
             task.rejectReason = rejectReason;
         }
         await task.save();
 
-        // 2. THE MAGIC: If Accepted, convert it to a live School Assignment!
         if (status === 'Accepted') {
             const employee = await User.findById(req.user._id);
-
-            // 1. Parse timing "08:00 AM - 02:00 PM" into separate fields
             let startTime = "";
             let endTime = "";
             if (task.timing && task.timing.includes('-')) {
@@ -481,14 +376,11 @@ employeeRouter.put('/tasks/:taskId/respond', userAuth, async (req, res) => {
                 endTime = parts[1].trim();
             }
 
-            // 2. Extract Geofence from the school object
             const coords = task.school?.location?.coordinates || [0, 0];
-
-            // 3. Create the official Assignment object
             const newAssignment = {
                 school: task.school._id,
-                category: task.category || "Junior Band", // Matches task category
-                startDate: new Date(), // Converts to live today
+                category: task.category || "Junior Band",
+                startDate: new Date(),
                 startTime: startTime,
                 endTime: endTime,
                 allowedDays: task.daysAllotted,
@@ -497,67 +389,293 @@ employeeRouter.put('/tasks/:taskId/respond', userAuth, async (req, res) => {
                     longitude: parseFloat(coords[0] || 0)
                 }
             };
-
             employee.assignments.push(newAssignment);
             await employee.save();
         }
 
-        // 3. Notify Admins (Real-time Socket Update & Dedicated Email)
-        const admins = await User.find({ role: { $in: ['Admin', 'SuperAdmin'] } });
         const taskTitle = `Assignment at ${task.school.schoolName}`;
+        const admins = await notifyAdminsInApp(req, `Task ${status}`, `${req.user.name} has ${status.toLowerCase()} the task at ${task.school.schoolName}.`, "System");
 
-        // Build the HTML details for the email based on the status
-        let detailsHtml = `
-            <div class="card-item">
-                <span class="label">Response</span>
-                <div class="value" style="color: ${status === 'Accepted' ? '#10b981' : '#ef4444'};">
-                    ${status}
-                </div>
-            </div>
-        `;
-
-        if (status === 'Rejected' && rejectReason) {
-            detailsHtml += `
-                <div class="card-item">
-                    <span class="label">Reason for Rejection</span>
-                    <div class="value" style="font-weight: 400;">${rejectReason}</div>
-                </div>
-            `;
-        }
-
-        await Promise.all(admins.map(async (admin) => {
-            // 1. Database Notification
-            const adminNotif = await Notification.create({
-                recipient: admin._id,
-                title: `Task ${status}`,
-                message: `${req.user.name} has ${status.toLowerCase()} the task at ${task.school.schoolName}.`,
-                type: "System"
-            });
-
-            // 2. Real-time Socket Emission
-            if (req.io) {
-                req.io.to(admin._id.toString()).emit('new_notification', adminNotif);
-            }
-
-            // 3. Send Dedicated Email (if admin hasn't disabled notifications)
+        for (const admin of admins) {
             if (admin.preferences?.adminNotifications !== false) {
-                sendAdminTaskResponseEmail(
-                    admin.email,
-                    admin.name,
-                    req.user.name,
-                    taskTitle,
-                    status,
-                    rejectReason
+                await sendAdminTaskResponseEmail(
+                    admin.email, admin.name, req.user.name, taskTitle, status, rejectReason
                 );
             }
-        }));
+        }
 
         res.status(200).json({ success: true, message: `Task marked as ${status}` });
-
     } catch (error) {
         console.error("Task Response Error:", error);
         res.status(500).json({ success: false, message: "Server error responding to task." });
     }
 });
 
-module.exports = employeeRouter
+// ==========================================
+// 9. GET ASSIGNED SCHOOLS & 30-DAY HISTORY
+// ==========================================
+employeeRouter.get('/assigned-schools', userAuth, async (req, res) => {
+    try {
+        const employeeId = req.user._id;
+
+        // Calculate the date 30 days ago
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+        const thirtyDaysAgoString = thirtyDaysAgo.toISOString().split('T')[0];
+
+        const user = await User.findById(employeeId).populate('assignments.school');
+        if (!user) return res.status(404).json({ success: false, message: "User not found" });
+
+        // Get all attendance for the last 30 days
+        const attendances = await Attendance.find({
+            teacher: employeeId,
+            date: { $gte: thirtyDaysAgoString }
+        }).sort({ date: -1 });
+
+        // Group assignments by School ID
+        const schoolsMap = {};
+
+        user.assignments.forEach(assignment => {
+            if (!assignment.school) return;
+            const schoolId = assignment.school._id.toString();
+
+            if (!schoolsMap[schoolId]) {
+                schoolsMap[schoolId] = {
+                    id: schoolId,
+                    name: assignment.school.schoolName,
+                    address: assignment.school.address,
+                    categories: []
+                };
+            }
+
+            // Filter attendance strictly for this specific school + category
+            const catAttendances = attendances.filter(a => a.school.toString() === schoolId && a.band === assignment.category);
+
+            let stats = { present: 0, late: 0, absent: 0, events: 0 };
+            let history = catAttendances.map(a => {
+                let statusUpper = (a.status || 'Unknown').toUpperCase();
+                if (statusUpper === 'PRESENT') stats.present++;
+                if (statusUpper === 'LATE') stats.late++;
+                if (statusUpper === 'ABSENT') stats.absent++;
+                if (statusUpper === 'EVENT') stats.events++;
+
+                // Format date nicely (e.g., "Mar 19, 2026")
+                const d = new Date(a.date);
+                const formattedDate = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+                return {
+                    id: a._id,
+                    date: formattedDate,
+                    status: a.status,
+                    note: a.teacherNote || a.lateReason || a.eventNote || null
+                };
+            });
+
+            schoolsMap[schoolId].categories.push({
+                id: assignment._id,
+                name: assignment.category,
+                stats,
+                history
+            });
+        });
+
+        const responseData = Object.values(schoolsMap);
+        res.status(200).json({ success: true, data: responseData });
+
+    } catch (error) {
+        console.error("Assigned Schools Fetch Error:", error);
+        res.status(500).json({ success: false, message: "Server error fetching assigned schools." });
+    }
+});
+
+// ==========================================
+// 10. POST EVENT LOG
+// ==========================================
+employeeRouter.post('/events', userAuth, async (req, res) => {
+    try {
+        const { schoolId, band, fromDate, toDate, startTime, endTime, description } = req.body;
+
+        const newEvent = await Event.create({
+            teacher: req.user._id,
+            school: schoolId,
+            band, fromDate, toDate, startTime, endTime, description,
+            status: 'Upcoming'
+        });
+
+        // Optionally notify Admins here using notifyAdminsInApp()
+
+        res.status(200).json({ success: true, message: "Event logged successfully", data: newEvent });
+    } catch (error) {
+        res.status(500).json({ success: false, message: "Server error creating event." });
+    }
+});
+
+// ==========================================
+// 11. POST MEDIA UPLOAD LOG
+// ==========================================
+employeeRouter.post('/media', userAuth, async (req, res) => {
+    try {
+        const { schoolId, band, mediaType, eventDate, eventContext, files } = req.body;
+
+        const newMediaLog = await Media.create({
+            teacher: req.user._id,
+            school: schoolId,
+            band, mediaType, eventDate, eventContext, files
+        });
+
+        res.status(200).json({ success: true, message: "Media uploaded successfully", data: newMediaLog });
+    } catch (error) {
+        res.status(500).json({ success: false, message: "Server error uploading media." });
+    }
+});
+
+// ==========================================
+// 12. GET PENDING & RECENT TASKS
+// ==========================================
+employeeRouter.get('/tasks', userAuth, async (req, res) => {
+    try {
+        // Fetch tasks assigned to this employee
+        const tasks = await Task.find({ teacher: req.user._id })
+            .populate('school', 'schoolName address location')
+            .sort({ createdAt: -1 }); // Newest first
+
+        // Format the response for the frontend
+        const formattedTasks = tasks.map(task => ({
+            id: task._id,
+            schoolName: task.school ? task.school.schoolName : "Unknown School",
+            location: task.school ? task.school.address : "Unknown Location",
+            daysAllotted: task.daysAllotted,
+            duration: task.duration,
+            timing: task.timing,
+            category: task.category,
+            taskDescription: task.taskDescription,
+            status: task.status.toLowerCase(), // Ensure 'pending', 'accepted', 'rejected'
+            rejectReason: task.rejectReason
+        }));
+
+        res.status(200).json({ success: true, data: formattedTasks });
+    } catch (error) {
+        console.error("Fetch Tasks Error:", error);
+        res.status(500).json({ success: false, message: "Server error fetching tasks." });
+    }
+});
+
+// ==========================================
+// 13. POST END OF DAY REPORT
+// ==========================================
+employeeRouter.post('/daily-report', userAuth, async (req, res) => {
+    try {
+        const { date, category, summary, eventName, eventDate, actionItems } = req.body;
+        const employeeId = req.user._id;
+
+        // Upsert: Create a new report, or update if one already exists for today
+        const report = await DailyReports.findOneAndUpdate(
+            { teacher: employeeId, date: date },
+            {
+                $set: {
+                    category,
+                    summary,
+                    eventName,
+                    eventDate,
+                    actionItems
+                }
+            },
+            { new: true, upsert: true }
+        );
+
+        res.status(200).json({ success: true, message: "Daily report saved.", data: report });
+    } catch (error) {
+        console.error("Daily Report Error:", error);
+        res.status(500).json({ success: false, message: "Server error saving report." });
+    }
+});
+
+// ==========================================
+// 14. UPDATE EMPLOYEE PASSWORD
+// ==========================================
+employeeRouter.put('/profile/password', userAuth, async (req, res) => {
+    try {
+        const { newPassword } = req.body;
+
+        if (!newPassword || newPassword.length < 6) {
+            return res.status(400).json({ success: false, message: "Password must be at least 6 characters long." });
+        }
+
+        const employee = await User.findById(req.user._id);
+        if (!employee) return res.status(404).json({ success: false, message: "User not found." });
+
+        // Hash the new password and save
+        const hashedPassword = await bcrypt.hash(newPassword, 10);
+        employee.password = hashedPassword;
+        await employee.save();
+
+        res.status(200).json({ success: true, message: "Password updated successfully." });
+    } catch (error) {
+        console.error("Password Update Error:", error);
+        res.status(500).json({ success: false, message: "Server error updating password." });
+    }
+});
+
+// ==========================================
+// 15. UPDATE ACCOUNT SETTINGS (PREFERENCES)
+// ==========================================
+employeeRouter.put('/settings/preferences', userAuth, async (req, res) => {
+    try {
+        const { systemLanguage, employeeNotifications } = req.body;
+
+        // Use $set to target specific nested fields without erasing others
+        const updateData = {};
+        if (systemLanguage !== undefined) updateData['preferences.systemLanguage'] = systemLanguage;
+        if (employeeNotifications !== undefined) updateData['preferences.employeeNotifications'] = employeeNotifications;
+
+        const user = await User.findByIdAndUpdate(
+            req.user._id,
+            { $set: updateData },
+            { new: true, runValidators: true }
+        );
+
+        if (!user) return res.status(404).json({ success: false, message: "User not found" });
+
+        res.status(200).json({
+            success: true,
+            message: "Preferences updated successfully.",
+            preferences: user.preferences
+        });
+    } catch (error) {
+        console.error("Update Preferences Error:", error);
+        res.status(500).json({ success: false, message: "Server error updating preferences." });
+    }
+});
+
+// ==========================================
+// 16. GET PENDING & RECENT TASKS
+// ==========================================
+employeeRouter.get('/tasks', userAuth, async (req, res) => {
+    try {
+        // Fetch tasks assigned to this specific employee
+        const tasks = await Task.find({ teacher: req.user._id })
+            .populate('school', 'schoolName address location')
+            .sort({ createdAt: -1 }); // Newest first
+
+        // Format the response to match what the React component expects
+        const formattedTasks = tasks.map(task => ({
+            id: task._id,
+            schoolName: task.school ? task.school.schoolName : "Unknown School",
+            location: task.school ? task.school.address : "Unknown Location",
+            daysAllotted: task.daysAllotted,
+            duration: task.duration,
+            timing: task.timing,
+            category: task.category || "General",
+            taskDescription: task.taskDescription,
+            status: task.status.toLowerCase(), // Ensure 'pending', 'accepted', 'rejected'
+            rejectReason: task.rejectReason
+        }));
+
+        res.status(200).json({ success: true, data: formattedTasks });
+    } catch (error) {
+        console.error("Fetch Tasks Error:", error);
+        res.status(500).json({ success: false, message: "Server error fetching tasks." });
+    }
+});
+
+module.exports = employeeRouter;

@@ -24,10 +24,7 @@ const attendanceSchema = new mongoose.Schema({
     checkOutLocationDesc: { type: String },
     checkOutCoordinates: { type: [Number] },
 
-    // Directly linked to the Daily Record Details UI
     teacherNote: { type: String }, // e.g., "Heavy traffic on Main St."
-    dailyReport: { type: String }  // e.g., "Conducted Science lab experiments..."
-
 }, { timestamps: true });
 
 module.exports = mongoose.model('Attendance', attendanceSchema);

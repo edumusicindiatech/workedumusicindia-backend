@@ -2,10 +2,10 @@ const express = require('express');
 const notificationRouter = express.Router();
 const Notification = require('../models/Notification');
 const userAuth = require('../middleware/userAuth');
-const adminAuth = require('../middleware/adminAuth');
+// Removed adminAuth because these routes are safe for any logged-in user
 
 // 1. GET: Fetch all notifications for the logged-in user
-notificationRouter.get('/', userAuth, adminAuth, async (req, res) => {
+notificationRouter.get('/', userAuth, async (req, res) => {
     try {
         const notifications = await Notification.find({ recipient: req.user._id })
             .sort({ createdAt: -1 })
@@ -18,7 +18,7 @@ notificationRouter.get('/', userAuth, adminAuth, async (req, res) => {
 });
 
 // 2. PUT: Mark all notifications as read
-notificationRouter.put('/mark-read', userAuth, adminAuth, async (req, res) => {
+notificationRouter.put('/mark-read', userAuth, async (req, res) => {
     try {
         await Notification.updateMany(
             { recipient: req.user._id, isRead: false },
@@ -31,7 +31,7 @@ notificationRouter.put('/mark-read', userAuth, adminAuth, async (req, res) => {
 });
 
 // 3. DELETE: Clear all notifications
-notificationRouter.delete('/clear', userAuth, adminAuth, async (req, res) => {
+notificationRouter.delete('/clear', userAuth, async (req, res) => {
     try {
         await Notification.deleteMany({ recipient: req.user._id });
         res.json({ success: true, message: "Notifications cleared" });

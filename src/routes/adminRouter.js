@@ -970,9 +970,14 @@ adminRouter.get('/employees/:id/attendance', userAuth, adminAuth, async (req, re
         const employee = await User.findById(id);
         if (!employee) return res.status(404).json({ success: false, message: "Employee not found." });
 
+        // 1. Fetch Attendance (Use .lean() for faster processing)
         const attendances = await Attendance.find({ teacher: id })
             .populate('school', 'schoolName')
-            .sort({ date: -1 });
+            .sort({ date: -1 })
+            .lean();
+
+        // 2. Fetch Daily Reports from the NEW schema
+        const dailyReports = await DailyReports.find({ teacher: id }).lean();
 
         const monthMap = new Map();
 
@@ -1038,6 +1043,9 @@ adminRouter.get('/employees/:id/attendance', userAuth, adminAuth, async (req, re
             const formattedDate = `${shortMonth} ${dayNum}, ${year} (${dayName})`;
             const displayNote = att.teacherNote || att.lateReason || att.eventNote || null;
 
+            // --- MAGIC FIX: FIND THE MATCHING DAILY REPORT FROM THE NEW DATABASE ---
+            const reportForDay = dailyReports.find(report => report.date === att.date);
+
             catObj.records.push({
                 id: att._id.toString(),
                 date: formattedDate,
@@ -1045,8 +1053,8 @@ adminRouter.get('/employees/:id/attendance', userAuth, adminAuth, async (req, re
                 status: statusUpper,
                 checkIn: formatTime(att.checkInTime),
                 checkOut: formatTime(att.checkOutTime),
-                hasReport: !!att.dailyReport,
-                dailyReport: att.dailyReport,
+                hasReport: !!reportForDay,           // Now checks the new schema
+                dailyReport: reportForDay || null,   // Now attaches the full object
                 teacherNote: att.teacherNote,
                 lateReason: att.lateReason,
                 note: displayNote ? `"${displayNote}"` : null

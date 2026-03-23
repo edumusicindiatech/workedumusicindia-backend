@@ -50,6 +50,7 @@ app.use('/api/auth', authRouter);
 app.use('/api/admin', adminRouter);
 app.use('/api/employee', employeeRouter);
 app.use('/api/admin/notifications', notificationRouter);
+app.use('/api/employee/notifications', notificationRouter);
 app.use('/api/admin/communication', communicationRouter);
 app.use('/api/admin/progress', progressRouter);
 

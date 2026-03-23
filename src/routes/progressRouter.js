@@ -2,8 +2,8 @@ const express = require('express');
 const progressRouter = express.Router();
 const User = require('../models/User');
 const Attendance = require('../models/Attendance');
-const Media = require('../models/Media')
-const School = require('../models/School');
+const Media = require('../models/Media');
+const DailyReport = require('../models/DailyReports')
 const userAuth = require('../middleware/userAuth');
 const adminAuth = require('../middleware/adminAuth');
 const excelJS = require('exceljs');
@@ -37,14 +37,13 @@ progressRouter.get('/employees', userAuth, adminAuth, async (req, res) => {
             // B. Fetch Media Logs for current week
             const mediaLogs = await Media.find({
                 teacher: emp._id,
-                createdAt: { $gte: startOfWeek } // Assuming media is evaluated by when it was uploaded
+                createdAt: { $gte: startOfWeek }
             });
 
             let attendanceScore = 100;
 
             // --- 1. ATTENDANCE MATH ---
             if (attendanceRecords.length > 0) {
-                // Present, Late, or Event count as showing up.
                 const positiveRecords = attendanceRecords.filter(r => ['Present', 'Event', 'Late'].includes(r.status)).length;
                 attendanceScore = (positiveRecords / attendanceRecords.length) * 100;
             }
@@ -52,8 +51,6 @@ progressRouter.get('/employees', userAuth, adminAuth, async (req, res) => {
             // --- 2. MEDIA MATH ---
             let mediaFilesCount = 0;
             mediaLogs.forEach(log => {
-                // Count all files uploaded this week. 
-                // (If you want STRICTLY videos: log.files.filter(f => f.fileType === 'video').length)
                 mediaFilesCount += log.files.length;
             });
 
@@ -94,25 +91,35 @@ progressRouter.get('/employees', userAuth, adminAuth, async (req, res) => {
 // ============================================================================
 progressRouter.get('/:teacherId/records', userAuth, adminAuth, async (req, res) => {
     try {
-        // Use .lean() so we can inject media counts into the objects easily
-        const records = await Attendance.find({ teacher: req.params.teacherId })
+        const teacherId = req.params.teacherId;
+
+        // Fetch Data using .lean() so we can inject new properties
+        const records = await Attendance.find({ teacher: teacherId })
             .populate('school', 'schoolName address')
             .sort({ date: -1 })
             .lean();
 
-        const mediaLogs = await Media.find({ teacher: req.params.teacherId }).lean();
+        const mediaLogs = await Media.find({ teacher: teacherId }).lean();
+        const dailyReports = await DailyReport.find({ teacher: teacherId }).lean(); // <-- NEW: Fetch EOD Reports
 
-        // Attach Media Counts to the specific daily attendance record
+        // Attach Media Counts & Daily Reports to the specific attendance record
         records.forEach(record => {
+            // 1. Attach Media
             const matchingMedia = mediaLogs.filter(m =>
-                // Match by exact date, school, and category/band
                 m.eventDate && m.eventDate.toISOString().split('T')[0] === record.date &&
                 m.school.toString() === record.school._id.toString() &&
                 m.band === record.band
             );
-
-            // Sum up all files uploaded for this specific shift
             record.mediaFilesCount = matchingMedia.reduce((sum, m) => sum + m.files.length, 0);
+
+            // 2. Attach Daily Report (Matched by date)
+            const reportForDay = dailyReports.find(report => report.date === record.date);
+
+            // If the new schema report exists, attach it as an object. 
+            // Otherwise, keep the legacy string (if it exists).
+            if (reportForDay) {
+                record.dailyReport = reportForDay;
+            }
         });
 
         res.json({ success: true, data: records });
@@ -138,8 +145,12 @@ progressRouter.get('/:teacherId/export/:month', userAuth, adminAuth, async (req,
             date: { $regex: `^${month}` }
         }).populate('school', 'schoolName').sort({ date: 1 }).lean();
 
-        // Fetch Media
+        // Fetch Media & Daily Reports
         const mediaLogs = await Media.find({ teacher: teacherId }).lean();
+        const dailyReports = await DailyReport.find({
+            teacher: teacherId,
+            date: { $regex: `^${month}` }
+        }).lean(); // <-- NEW: Fetch EOD Reports for the month
 
         const workbook = new excelJS.Workbook();
         const worksheet = workbook.addWorksheet(`${teacher.name} - ${month}`);
@@ -152,18 +163,18 @@ progressRouter.get('/:teacherId/export/:month', userAuth, adminAuth, async (req,
             { header: 'Status', key: 'status', width: 15 },
             { header: 'Check-In', key: 'checkIn', width: 15 },
             { header: 'Check-Out', key: 'checkOut', width: 15 },
-            { header: 'Media Files Sent', key: 'mediaCount', width: 20 }, // NEW MEDIA COLUMN
+            { header: 'Media Files Sent', key: 'mediaCount', width: 20 },
             { header: 'Teacher Note / Reason', key: 'note', width: 40 },
-            { header: 'Daily Report', key: 'report', width: 50 }
+            { header: 'Daily Report', key: 'report', width: 60 } // Widened for richer data
         ];
 
-        // Style the Header Row (Indigo background, White text)
+        // Style the Header Row
         worksheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
         worksheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4F46E5' } };
 
         // Add Data Rows
         records.forEach(record => {
-            // Find media uploaded on this specific shift
+            // Calculate Media
             const matchingMedia = mediaLogs.filter(m =>
                 m.eventDate && m.eventDate.toISOString().split('T')[0] === record.date &&
                 m.school.toString() === record.school._id.toString() &&
@@ -171,17 +182,36 @@ progressRouter.get('/:teacherId/export/:month', userAuth, adminAuth, async (req,
             );
             const mediaFilesCount = matchingMedia.reduce((sum, m) => sum + m.files.length, 0);
 
-            worksheet.addRow({
+            // Format Daily Report for Excel (Convert object to readable string)
+            const reportForDay = dailyReports.find(report => report.date === record.date);
+            let formattedReportString = record.dailyReport || '-'; // Legacy fallback
+
+            if (reportForDay) {
+                formattedReportString = `[${reportForDay.category.toUpperCase()}]\nSummary: ${reportForDay.summary}`;
+                if (reportForDay.eventName) {
+                    formattedReportString += `\nEvent: ${reportForDay.eventName} (${reportForDay.eventDate})`;
+                }
+                if (reportForDay.actionItems) {
+                    formattedReportString += `\nAction Items: ${reportForDay.actionItems}`;
+                }
+            }
+
+            // Create Row
+            const row = worksheet.addRow({
                 date: record.date,
                 school: record.school?.schoolName || 'Unknown',
                 category: record.band,
                 status: record.status.toUpperCase(),
                 checkIn: record.checkInTime ? new Date(record.checkInTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-',
                 checkOut: record.checkOutTime ? new Date(record.checkOutTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-',
-                mediaCount: mediaFilesCount, // Populate new column
+                mediaCount: mediaFilesCount,
                 note: record.teacherNote || record.lateReason || record.eventNote || record.overtimeReason || '-',
-                report: record.dailyReport || '-'
+                report: formattedReportString // Injects the formatted string
             });
+
+            // Make the report cell wrap text so it looks clean in Excel
+            row.getCell('report').alignment = { wrapText: true, vertical: 'top' };
+            row.getCell('note').alignment = { wrapText: true, vertical: 'top' };
         });
 
         // Setup Response Headers for Excel Download
