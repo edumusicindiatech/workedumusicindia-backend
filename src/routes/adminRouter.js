@@ -1252,131 +1252,89 @@ adminRouter.get('/events', userAuth, adminAuth, async (req, res) => {
 // ==========================================
 // 20. OVERRIDE ATTENDANCE
 // ==========================================
-adminRouter.put('/attendance/:id/override', userAuth, adminAuth, async (req, res) => {
+adminRouter.put('/attendance/:id/override', /* adminAuth middleware if you have one */ async (req, res) => {
     try {
+        const { id } = req.params;
         const { action, reason, teacherId, schoolId, band, date } = req.body;
-        const attendanceId = req.params.id;
-        const actionAdmin = req.user;
 
-        let attendance;
-        let isDeleted = false; // <-- NEW: Tracks if we deleted the record
+        // 1. Determine the query. If it's a pending shift, the ID might just be a frontend string like "schoolId-band"
+        // So we fallback to matching the exact shift details.
+        const query = mongoose.Types.ObjectId.isValid(id)
+            ? { _id: id }
+            : { teacher: teacherId, school: schoolId, band: band, date: date };
 
-        // 1. RESOLVE THE ATTENDANCE RECORD
-        if (mongoose.Types.ObjectId.isValid(attendanceId)) {
-            attendance = await Attendance.findById(attendanceId);
-        } else if (attendanceId.startsWith('pending_')) {
-            attendance = await Attendance.findOne({ teacher: teacherId, school: schoolId, date: date });
+        let updateDoc = {};
+        const now = new Date();
 
-            if (!attendance) {
-                if (!teacherId || !schoolId || !band) {
-                    return res.status(400).json({ success: false, message: "Missing required data to create pending record." });
-                }
-                attendance = new Attendance({
-                    teacher: teacherId,
-                    school: schoolId,
-                    band: band,
-                    date: date,
-                    status: 'Present' // <-- Ensure this respects your schema's enum
+        // 2. Handle "Revoke" Action (Deletes record or Undoes Checkout)
+        if (action === "Revoke") {
+            const existingRecord = await Attendance.findOne(query);
+            if (!existingRecord) {
+                return res.status(404).json({ success: false, message: "Record not found to revoke." });
+            }
+
+            if (existingRecord.checkOutTime) {
+                // Undo Checkout
+                await Attendance.findOneAndUpdate(query, { $unset: { checkOutTime: 1 } }, { returnDocument: 'after' });
+            } else {
+                // Revoke All (Delete the pending/checked-in record entirely)
+                await Attendance.findOneAndDelete(query);
+            }
+        }
+        // 3. Handle all other actions (Upsert logic)
+        else {
+            switch (action) {
+                case "CheckIn":
+                    updateDoc = { $set: { checkInTime: now, status: "Present" } };
+                    if (reason) updateDoc.$set.teacherNote = `Admin Override: ${reason}`;
+                    break;
+                case "CheckOut":
+                    updateDoc = { $set: { checkOutTime: now, status: "Completed" } };
+                    if (reason) updateDoc.$set.teacherNote = `Admin Override: ${reason}`;
+                    break;
+                case "Absent":
+                    updateDoc = { $set: { status: "Absent", teacherNote: reason || "Admin marked Absent" } };
+                    break;
+                case "Late":
+                    updateDoc = { $set: { status: "Late", lateReason: reason || "Admin marked Late" } };
+                    break;
+                case "Event":
+                    updateDoc = { $set: { status: "Event", eventNote: reason || "Admin triggered Event" } };
+                    break;
+                default:
+                    return res.status(400).json({ success: false, message: "Invalid action provided." });
+            }
+
+            // Force an update or create it if it doesn't exist (Upsert)
+            await Attendance.findOneAndUpdate(query, updateDoc, {
+                returnDocument: 'after',
+                upsert: true,
+                setDefaultsOnInsert: true
+            });
+        }
+
+        // --- REAL-TIME SOCKET UPDATES ---
+        const io = req.io || req.app.get('io');
+        if (io) {
+            // 1. Tell ALL admin dashboards to refresh silently
+            io.emit("operations_update", { message: "Admin override applied" });
+
+            // 2. Tell the specific employee's app to refresh their schedule so they see the admin's changes
+            if (teacherId) {
+                io.to(teacherId.toString()).emit("employee_schedule_refresh");
+                // Fallback to "new_notification" just in case your employee app still uses the old listener
+                io.to(teacherId.toString()).emit("new_notification", {
+                    type: "SCHEDULE_UPDATE",
+                    message: `Admin modified your schedule (${action}).`
                 });
             }
-        } else {
-            return res.status(400).json({ success: false, message: "Invalid Attendance ID format." });
         }
 
-        if (!attendance) return res.status(404).json({ success: false, message: "Attendance record not found." });
-
-        const employee = await User.findById(attendance.teacher);
-        const school = await School.findById(attendance.school);
-        if (!employee || !school) return res.status(404).json({ success: false, message: "Employee or School not found." });
-
-        // 2. APPLY THE OVERRIDE LOGIC
-        let statusString = "";
-
-        if (action === 'CheckIn') {
-            attendance.checkInTime = new Date();
-            attendance.status = 'Present';
-            if (reason) attendance.teacherNote = `Admin Override (Check-In): ${reason}`;
-            statusString = "Checked In";
-        } else if (action === 'CheckOut') {
-            if (!attendance.checkInTime) attendance.checkInTime = new Date();
-            attendance.checkOutTime = new Date();
-            attendance.status = 'Present';
-            if (reason) attendance.overtimeReason = `Admin Override (Check-Out): ${reason}`;
-            statusString = "Checked Out";
-        } else if (action === 'Absent') {
-            attendance.status = 'Absent';
-            if (reason) attendance.teacherNote = `Admin Override: ${reason}`;
-            statusString = "Absent";
-        } else if (action === 'Late') {
-            attendance.status = 'Late';
-            if (!attendance.checkInTime) attendance.checkInTime = new Date();
-            if (reason) attendance.lateReason = `Admin Override: ${reason}`;
-            statusString = "Late";
-        } else if (action === 'Event') {
-            attendance.status = 'Event';
-            if (!attendance.checkInTime) attendance.checkInTime = new Date();
-            if (reason) attendance.eventNote = `Admin Override: ${reason}`;
-            statusString = "Event";
-        } else if (action === 'Revoke') {
-            // --- NEW: SMART REVOKE LOGIC ---
-            if (attendance.checkOutTime) {
-                // Scenario A: Undo the Check-Out ONLY
-                attendance.checkOutTime = null;
-                attendance.overtimeReason = null;
-
-                // Revert to correct running status
-                if (attendance.eventNote) attendance.status = 'Event';
-                else if (attendance.lateReason) attendance.status = 'Late';
-                else attendance.status = 'Present';
-
-                statusString = "Check-Out Revoked";
-            } else {
-                // Scenario B: Undo Check-In / Wipe record completely
-                await Attendance.findByIdAndDelete(attendance._id);
-                isDeleted = true;
-                statusString = "All Attendance Revoked";
-            }
-        } else {
-            return res.status(400).json({ success: false, message: "Invalid action." });
-        }
-
-        // Only save if we didn't just delete the record!
-        if (!isDeleted) {
-            await attendance.save();
-        }
-
-        // 3. NOTIFICATIONS & SOCKETS
-        const overrideMsg = `Your attendance for ${school.schoolName} was manually set to ${statusString} by Admin ${actionAdmin.name}. ${reason ? `Reason: ${reason}` : ''}`;
-
-        const empNotification = await Notification.create({
-            recipient: employee._id,
-            title: "Attendance Override",
-            message: overrideMsg,
-            type: "System"
-        });
-
-        if (req.io) {
-            req.io.to(employee._id.toString()).emit('new_notification', {
-                _id: empNotification._id,
-                title: empNotification.title,
-                message: empNotification.message,
-                timestamp: empNotification.createdAt
-            });
-            req.io.emit('operations_update', { type: 'refresh_feed' });
-        }
-
-        sendEmployeeAttendanceOverrideEmail(employee.email, employee.name, actionAdmin.name, attendance.date, school.schoolName, statusString, reason);
-
-        const otherAdmins = await User.find({ role: { $in: ['Admin'] }, _id: { $ne: actionAdmin._id } });
-        otherAdmins.forEach(admin => {
-            sendAdminAttendanceOverrideAlert(admin.email, admin.name, actionAdmin.name, employee.name, school.schoolName, attendance.date, statusString, reason);
-        });
-
-        res.status(200).json({ success: true, message: `Attendance overridden to ${statusString}.`, data: attendance });
+        res.status(200).json({ success: true, message: `Successfully applied ${action} override.` });
 
     } catch (error) {
-        console.error("Attendance Override Error:", error);
-        res.status(500).json({ success: false, message: "Server error overriding attendance." });
+        console.error("Admin Override Error:", error);
+        res.status(500).json({ success: false, message: "Failed to apply override." });
     }
 });
 

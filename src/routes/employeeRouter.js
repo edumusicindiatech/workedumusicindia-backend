@@ -311,43 +311,72 @@ employeeRouter.post('/mark-day-status', userAuth, async (req, res) => {
     try {
         const { status, reason } = req.body;
         const employeeId = req.user._id;
+
+        // Populate the assignments so we can grab the school details
         const employee = await User.findById(employeeId).populate('assignments.school');
 
-        const now = new Date();
-        const todayString = now.toISOString().split('T')[0];
-        const todayDayOfWeek = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][now.getDay()];
+        // Mirroring your exact working date logic
+        const dateString = new Date().toISOString().split('T')[0];
+        const todayDayOfWeek = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date().getDay()];
 
-        const todaysAssignments = employee.assignments.filter(a => a.allowedDays?.includes(todayDayOfWeek));
-        const existingRecords = await Attendance.find({ teacher: employeeId, date: todayString });
-        const existingKeys = existingRecords.map(r => `${r.school.toString()}-${r.band}`);
+        // 1. Get today's assignments
+        const todaysAssignments = employee.assignments.filter(a => a?.allowedDays?.includes(todayDayOfWeek));
+
+        // 2. Find shifts that already have an attendance record so we skip them
+        const existingRecords = await Attendance.find({ teacher: employeeId, date: dateString });
+        const existingKeys = existingRecords.map(r => `${r?.school?.toString()}-${r?.band}`);
 
         const recordsToCreate = [];
-        let schoolsList = [];
 
+        // 3. Prepare the exact same object structure as your working /mark-status route
         todaysAssignments.forEach(a => {
-            if (!existingKeys.includes(`${a.school._id}-${a.category}`)) {
+            if (!existingKeys.includes(`${a?.school?._id}-${a?.category}`)) {
                 recordsToCreate.push({
-                    teacher: employeeId, school: a.school._id, band: a.category,
-                    date: todayString, status, teacherNote: reason || "Global Day Status"
+                    teacher: employeeId,
+                    school: a?.school?._id,
+                    band: a?.category,
+                    date: dateString,
+                    status: status,
+                    teacherNote: reason || "Marked from Dashboard" // Exact match to your working code
                 });
-                schoolsList.push(`${a.school.schoolName} (${a.category})`);
             }
         });
 
+        // 4. Create them all at once using insertMany (the bulk equivalent of .create)
         if (recordsToCreate.length > 0) {
             await Attendance.insertMany(recordsToCreate);
 
-            // Notify Admins
-            const admins = await notifyAdminsInApp(req, `Global ${status}: ${employee.name}`, `${employee.name} declared full day ${status}`, "Warning");
-            for (const admin of admins) {
-                if (admin.preferences?.adminNotifications !== false) {
-                    await sendAdminStatusAlert(admin.email, admin.name, employee.name, "All Remaining Schools", "N/A", status, reason);
+            // --- REAL-TIME SOCKET UPDATES START ---
+            const io = req.io;
+            if (io) {
+                // Instantly refresh the employee's dashboard
+                io.to(employeeId.toString()).emit("employee_schedule_refresh", {
+                    type: "SCHEDULE_UPDATE",
+                    message: `All remaining shifts marked as ${status}.`
+                });
+                io.emit('operations_update', { type: 'refresh_feed' });
+            }
+            // --- REAL-TIME SOCKET UPDATES END ---
+
+            // Notify Admins (Exact same logic as your working route)
+
+            const admins = await notifyAdminsInApp(req, `${status} Alert: ${employee.name}`, `${employee.name} marked full day ${status} for remaining schools`, "Warning");
+
+            if (Array.isArray(admins)) {
+                for (const admin of admins) {
+                    // DELETED THE MANUAL "io.to(admin._id).emit" BLOCK HERE
+
+                    // ONLY keep the email alert logic in this loop
+                    if (admin.preferences?.adminNotifications !== false) {
+                        await sendAdminStatusAlert(admin.email, admin.name, employee.name, "All Remaining Schools", "N/A", status, reason);
+                    }
                 }
             }
         }
 
         res.status(200).json({ success: true, message: `All remaining shifts marked as ${status}.` });
     } catch (error) {
+        console.error("Error in /mark-day-status:", error);
         res.status(500).json({ success: false, message: "Server error." });
     }
 });
@@ -612,7 +641,7 @@ employeeRouter.post('/daily-report', userAuth, async (req, res) => {
             {
                 $set: { category, summary, eventName, eventDate }
             },
-            { new: true, upsert: true }
+            { returnDocument: 'after', upsert: true }
         );
 
         // --- REAL-TIME SOCKET & NOTIFICATION EMIT TO ADMINS ---
