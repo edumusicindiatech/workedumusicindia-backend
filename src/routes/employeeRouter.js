@@ -456,7 +456,7 @@ employeeRouter.get('/assigned-schools', userAuth, async (req, res) => {
             }
 
             // Filter attendance strictly for this specific school + category
-            const catAttendances = attendances.filter(a => a.school.toString() === schoolId && a.band === assignment.category);
+            const catAttendances = attendances.filter(a => a.school?.toString() === schoolId && a.band === assignment.category);
 
             let stats = { present: 0, late: 0, absent: 0, events: 0 };
             let history = catAttendances.map(a => {
