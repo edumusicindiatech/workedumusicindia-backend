@@ -8,10 +8,7 @@ const dailyReportSchema = new mongoose.Schema({
 
     // Optional Event Fields
     eventName: { type: String },
-    eventDate: { type: String },
-
-    // Optional Action Items
-    actionItems: { type: String }
+    eventDate: { type: String }
 }, { timestamps: true });
 
 // Ensure an employee only has ONE daily report per day (Upsert logic)

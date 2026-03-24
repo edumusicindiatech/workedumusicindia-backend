@@ -8,13 +8,15 @@ const Task = require('../models/Task');
 const Notification = require('../models/Notification');
 const bcrypt = require('bcrypt')
 const isValidator = require('validator');
+const Event = require('../models/Event')
 
 // Import all specific email templates
 const {
     sendAdminTaskResponseEmail,
     sendAdminCheckInAlert,
     sendAdminCheckOutAlert,
-    sendAdminStatusAlert
+    sendAdminStatusAlert,
+    sendAdminNewEventAlert
 } = require('../utils/emailService');
 const Media = require('../models/Media');
 const DailyReports = require('../models/DailyReports');
@@ -501,20 +503,47 @@ employeeRouter.get('/assigned-schools', userAuth, async (req, res) => {
 // ==========================================
 employeeRouter.post('/events', userAuth, async (req, res) => {
     try {
-        const { schoolId, band, fromDate, toDate, startTime, endTime, description } = req.body;
-
-        const newEvent = await Event.create({
+        // Assume you have an Event model. If not, create one!
+        const event = await Event.create({
             teacher: req.user._id,
-            school: schoolId,
-            band, fromDate, toDate, startTime, endTime, description,
-            status: 'Upcoming'
+            ...req.body
         });
 
-        // Optionally notify Admins here using notifyAdminsInApp()
+        // Fetch employee details to send in email
+        const employeeName = req.user.name;
 
-        res.status(200).json({ success: true, message: "Event logged successfully", data: newEvent });
+        // --- REAL-TIME SOCKET & NOTIFICATION EMIT TO ADMINS ---
+        if (req.io) {
+            const admins = await User.find({ role: { $in: ['Admin', 'SuperAdmin'] } });
+
+            await Promise.all(admins.map(async (admin) => {
+                // Create Notification in DB
+                const adminNotif = await Notification.create({
+                    recipient: admin._id,
+                    title: "New Event Logged",
+                    message: `${employeeName} scheduled an event at ${req.body.schoolName}.`,
+                    type: "System"
+                });
+
+                // Trigger Badge/Sound
+                req.io.to(admin._id.toString()).emit('new_notification', adminNotif);
+
+                // Trigger the Live Event update in the UI
+                req.io.to(admin._id.toString()).emit('new_event', event);
+
+                // Send the Email
+                await sendAdminNewEventAlert(
+                    admin.email, admin.name, employeeName,
+                    req.body.schoolName, req.body.categoryName,
+                    req.body.startDate, req.body.endDate,
+                    req.body.timeFrom, req.body.timeTo, req.body.description
+                );
+            }));
+        }
+
+        res.status(201).json({ success: true, data: event });
     } catch (error) {
-        res.status(500).json({ success: false, message: "Server error creating event." });
+        res.status(500).json({ success: false, message: "Error saving event." });
     }
 });
 
@@ -573,27 +602,43 @@ employeeRouter.get('/tasks', userAuth, async (req, res) => {
 // ==========================================
 employeeRouter.post('/daily-report', userAuth, async (req, res) => {
     try {
-        const { date, category, summary, eventName, eventDate, actionItems } = req.body;
-        const employeeId = req.user._id;
+        const { date, category, summary, eventName, eventDate } = req.body;
+        const teacherId = req.user._id;
+        const teacherName = req.user.name; // Get the employee's name for the alert
 
-        // Upsert: Create a new report, or update if one already exists for today
+        // Upsert: Update if exists, Create if it doesn't
         const report = await DailyReports.findOneAndUpdate(
-            { teacher: employeeId, date: date },
+            { teacher: teacherId, date: date },
             {
-                $set: {
-                    category,
-                    summary,
-                    eventName,
-                    eventDate,
-                    actionItems
-                }
+                $set: { category, summary, eventName, eventDate }
             },
             { new: true, upsert: true }
         );
 
-        res.status(200).json({ success: true, message: "Daily report saved.", data: report });
+        // --- REAL-TIME SOCKET & NOTIFICATION EMIT TO ADMINS ---
+        if (req.io) {
+            const admins = await User.find({ role: { $in: ['Admin', 'SuperAdmin'] } });
+
+            await Promise.all(admins.map(async (admin) => {
+                // 1. Create the actual Notification in the database for the Alerts tab
+                const adminNotif = await Notification.create({
+                    recipient: admin._id,
+                    title: "Daily Report Submitted",
+                    message: `${teacherName} has submitted their End of Day report.`,
+                    type: "System"
+                });
+
+                // 2. Emit the standard notification (This triggers the Sound & Red Badge!)
+                req.io.to(admin._id.toString()).emit('new_notification', adminNotif);
+
+                // 3. Emit the custom event to update the Daily Reports UI live
+                req.io.to(admin._id.toString()).emit('new_daily_report', report);
+            }));
+        }
+
+        res.status(200).json({ success: true, message: "Report saved successfully.", data: report });
     } catch (error) {
-        console.error("Daily Report Error:", error);
+        console.error("Save Report Error:", error);
         res.status(500).json({ success: false, message: "Server error saving report." });
     }
 });
@@ -666,7 +711,7 @@ employeeRouter.put('/settings/preferences', userAuth, async (req, res) => {
         const user = await User.findByIdAndUpdate(
             req.user._id,
             { $set: updateData },
-            { new: true, runValidators: true }
+            { returnDocument: 'after', runValidators: true }
         );
 
         if (!user) return res.status(404).json({ success: false, message: "User not found" });
@@ -712,5 +757,6 @@ employeeRouter.get('/tasks', userAuth, async (req, res) => {
         res.status(500).json({ success: false, message: "Server error fetching tasks." });
     }
 });
+
 
 module.exports = employeeRouter;

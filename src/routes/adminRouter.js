@@ -15,6 +15,7 @@ const Task = require('../models/Task');
 const Warning = require('../models/Warning');
 const fetchDailyFeedData = require('../utils/feedUtils');
 const DailyReports = require('../models/DailyReports')
+const Event = require('../models/Event')
 
 // ==========================================
 // EMAIL GATEKEEPER HELPER
@@ -86,7 +87,7 @@ adminRouter.post('/create-admin', userAuth, requireSuperAdmin, async (req, res) 
                 }
             },
             {
-                new: true,
+                returnDocument: 'after',
                 upsert: true,
                 runValidators: true,
                 setDefaultsOnInsert: true
@@ -147,7 +148,7 @@ adminRouter.post('/create-employee', userAuth, adminAuth, async (req, res) => {
                 }
             },
             {
-                new: true,
+                returnDocument: 'after',
                 upsert: true,
                 runValidators: true,
                 setDefaultsOnInsert: true
@@ -1216,6 +1217,35 @@ adminRouter.put('/settings/preferences', userAuth, async (req, res) => {
     }
 });
 
+// ==========================================
+// 19. GET DAIYREPORTS
+// ==========================================
+adminRouter.get('/daily-reports/:id', userAuth, adminAuth, async (req, res) => {
+    try {
+        const { id } = req.params;
+        // Fetch reports for the specific employee, sorted by newest first
+        const reports = await DailyReports.find({ teacher: id }).sort({ date: -1 });
 
+        res.status(200).json({ success: true, data: reports });
+    } catch (error) {
+        console.error("Fetch Daily Reports Error:", error);
+        res.status(500).json({ success: false, message: "Server error fetching daily reports." });
+    }
+});
+
+// ==========================================
+// 19. GET SCHOOL EVENTS
+// ==========================================
+adminRouter.get('/events', userAuth, adminAuth, async (req, res) => {
+    try {
+        const events = await Event.find()
+            .populate('teacher', 'name')
+            .sort({ startDate: 1 }); // Sort by upcoming
+
+        res.status(200).json({ success: true, data: events });
+    } catch (error) {
+        res.status(500).json({ success: false, message: "Server error fetching events." });
+    }
+});
 
 module.exports = adminRouter;

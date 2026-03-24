@@ -13,6 +13,7 @@ const startShiftWarningCron = require('../jobs/shiftWarningCron');
 const notificationRouter = require('../routes/notificationRouter');
 const communicationRouter = require('../routes/communicationRouter');
 const progressRouter = require('../routes/progressRouter');
+const startDailyReportsCron = require('../jobs/dailyReportReminder');
 
 const app = express();
 const server = http.createServer(app);
@@ -33,6 +34,7 @@ io.on('connection', (socket) => {
 
 // Initialize the Cron Job, passing the io instance so it can push live alerts
 startShiftWarningCron(io);
+startDailyReportsCron(io);
 
 app.use((req, res, next) => {
     req.io = io;

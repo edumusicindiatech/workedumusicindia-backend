@@ -22,6 +22,9 @@ const getAdminCheckInEmailTemplate = require('../templates/adminCheckInEmail');
 const getAdminCheckOutEmailTemplate = require('../templates/adminCheckOutEmail');
 const getAdminStatusAlertEmailTemplate = require('../templates/adminStatusAlertEmail');
 const getAdminAutoAbsentEmailTemplate = require('../templates/adminAutoAbsentEmail');
+const getEmployeeMissingReportTemplate = require('../templates/employeeMissingReportEmail');
+const getAdminMissingReportTemplate = require('../templates/adminMissingReportEmail');
+const getAdminNewEventTemplate = require('../templates/adminNewEventEmail');
 
 require('dotenv').config();
 
@@ -340,6 +343,39 @@ const sendAdminAutoAbsentAlert = async (adminEmail, adminName, employeeName, sch
     } catch (e) { console.error("AutoAbsent Email Error:", e); }
 };
 
+const sendEmployeeMissingReportAlert = async (email, employeeName, schoolName) => {
+    try {
+        await transporter.sendMail({
+            from: process.env.EMAIL_FROM,
+            to: email,
+            subject: "Action Required: Missing Daily Report",
+            html: getEmployeeMissingReportTemplate(employeeName, schoolName)
+        });
+    } catch (e) { console.error("Employee Missing Report Email Error:", e); }
+};
+
+const sendAdminMissingReportAlert = async (adminEmail, adminName, employeeName, schoolName, location, scheduledTime) => {
+    try {
+        await transporter.sendMail({
+            from: process.env.EMAIL_FROM,
+            to: adminEmail,
+            subject: `[Compliance Alert] Missing Report: ${employeeName}`,
+            html: getAdminMissingReportTemplate(adminName, employeeName, schoolName, location, scheduledTime)
+        });
+    } catch (e) { console.error("Admin Missing Report Email Error:", e); }
+};
+
+const sendAdminNewEventAlert = async (adminEmail, adminName, employeeName, schoolName, category, startDate, endDate, timeFrom, timeTo, description) => {
+    try {
+        await transporter.sendMail({
+            from: process.env.EMAIL_FROM,
+            to: adminEmail,
+            subject: `[New Event] ${schoolName} - ${employeeName}`,
+            html: getAdminNewEventTemplate(adminName, employeeName, schoolName, category, startDate, endDate, timeFrom, timeTo, description)
+        });
+    } catch (e) { console.error("New Event Email Error:", e); }
+};
+
 module.exports = {
     sendAdminWelcomeEmail,
     sendEmployeeWelcomeEmail,
@@ -364,5 +400,8 @@ module.exports = {
     sendAdminCheckInAlert,
     sendAdminCheckOutAlert,
     sendAdminStatusAlert,
-    sendAdminAutoAbsentAlert
+    sendAdminAutoAbsentAlert,
+    sendEmployeeMissingReportAlert,
+    sendAdminMissingReportAlert,
+    sendAdminNewEventAlert
 };
