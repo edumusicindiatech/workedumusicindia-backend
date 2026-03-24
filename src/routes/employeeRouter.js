@@ -186,7 +186,7 @@ employeeRouter.post('/check-in', userAuth, async (req, res) => {
 
         let status = 'Present';
         if (lateReason) status = 'Late';
-        if (eventNote) status = 'Event';
+        if (eventNote) status = 'Late';
 
         await Attendance.create({
             teacher: employee._id,

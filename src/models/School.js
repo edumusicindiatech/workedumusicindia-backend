@@ -9,4 +9,6 @@ const schoolSchema = new mongoose.Schema({
     }
 }, { timestamps: true });
 
+schoolSchema.index({ location: '2dsphere' });
+
 module.exports = mongoose.model('School', schoolSchema);
