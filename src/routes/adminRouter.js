@@ -1249,7 +1249,9 @@ adminRouter.get('/events', userAuth, adminAuth, async (req, res) => {
     }
 });
 
-
+// ==========================================
+// 20. OVERRIDE ATTENDANCE
+// ==========================================
 adminRouter.put('/attendance/:id/override', userAuth, adminAuth, async (req, res) => {
     try {
         const { action, reason, teacherId, schoolId, band, date } = req.body;
@@ -1360,7 +1362,7 @@ adminRouter.put('/attendance/:id/override', userAuth, adminAuth, async (req, res
                 message: empNotification.message,
                 timestamp: empNotification.createdAt
             });
-            req.io.emit('new_notification', { type: 'refresh_feed' });
+            req.io.emit('operations_update', { type: 'refresh_feed' });
         }
 
         sendEmployeeAttendanceOverrideEmail(employee.email, employee.name, actionAdmin.name, attendance.date, school.schoolName, statusString, reason);
