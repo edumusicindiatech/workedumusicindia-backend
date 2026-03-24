@@ -40,18 +40,13 @@ communicationRouter.post('/send', userAuth, adminAuth, async (req, res) => {
         let recipients = [];
 
         // --- TARGETING LOGIC ---
-        // Notice: We added 'role' and 'preferences' to the select so we can filter emails properly
         if (targetGroup === 'All Employees') {
-            // Gets ALL active users (Employees AND Admins as requested)
             recipients = await User.find({ isActive: true }).select('_id email name role preferences');
         }
         else if (targetGroup === 'By Zone') {
             if (!targetZone) return res.status(400).json({ success: false, message: "Zone is required." });
 
-            // Handle comma separated values, trim spaces, and ignore empty strings
             const zonesList = targetZone.split(',').map(z => z.trim()).filter(z => z);
-
-            // Create Case-Insensitive Exact Match Regex (e.g., /^sultanpur$/i)
             const regexZones = zonesList.map(z => new RegExp(`^${z}$`, 'i'));
 
             recipients = await User.find({
@@ -79,45 +74,49 @@ communicationRouter.post('/send', userAuth, adminAuth, async (req, res) => {
             reachCount: recipients.length
         });
 
-        // --- 2. CREATE IN-APP NOTIFICATIONS (These always send regardless of email settings) ---
+        // --- 2. CREATE IN-APP NOTIFICATIONS & EMIT REAL-TIME EVENTS ---
         const notificationsToInsert = recipients.map(user => ({
             recipient: user._id,
             title: "📢 Official Broadcast",
             message: message,
             type: "General"
         }));
-        await Notification.insertMany(notificationsToInsert);
 
-        // --- 3. SEND EMAILS IN BACKGROUND (RESPECTING NOTIFICATION SETTINGS) ---
+        // Save to MongoDB
+        const insertedNotifications = await Notification.insertMany(notificationsToInsert);
 
-        // A. Get the sending Admin's Master Override Settings
+        // 👉 THE MAGIC: Broadcast to live Socket.io rooms
+        const io = req.io; // Grab the socket instance
+        if (io) {
+            insertedNotifications.forEach(notif => {
+                // Send the exact new database document to the specific user's room
+                io.to(notif.recipient.toString()).emit("new_notification", notif);
+            });
+        } else {
+            console.warn("⚠️ Socket.io instance not found on req.app. Real-time update skipped.");
+        }
+
+        // --- 3. SEND EMAILS IN BACKGROUND ---
         const actionAdmin = await User.findById(req.user._id);
         const adminAllowsEmpEmails = actionAdmin.preferences?.employeeNotifications !== false;
         const adminAllowsAdminEmails = actionAdmin.preferences?.adminNotifications !== false;
 
-        // B. Filter the recipients list to only include valid, opted-in emails
         const validEmails = recipients.filter(u => {
-            if (!u.email) return false; // Skip if no email on record
+            if (!u.email) return false;
 
             const isRecipientAdmin = ['Admin', 'SuperAdmin'].includes(u.role);
-
-            // Check 1: Does the recipient personally want emails?
             const recipientPrefers = isRecipientAdmin
                 ? u.preferences?.adminNotifications !== false
                 : u.preferences?.employeeNotifications !== false;
 
             if (!recipientPrefers) return false;
-
-            // Check 2: Does the sending Admin's master override allow it?
             if (isRecipientAdmin && !adminAllowsAdminEmails) return false;
             if (!isRecipientAdmin && !adminAllowsEmpEmails) return false;
 
             return true;
         }).map(u => u.email);
 
-        // C. Send if there are any valid emails left in the list
         if (validEmails.length > 0) {
-            // We don't await this so the API responds instantly to the admin UI
             sendBroadcastEmail(validEmails, message, req.user.name).catch(console.error);
         }
 

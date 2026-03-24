@@ -931,7 +931,9 @@ adminRouter.post('/employees/:id/warnings', userAuth, adminAuth, async (req, res
             recipient: employee._id,
             title: `${level} Warning Issued`,
             message: empMsg,
-            type: "Warning"
+            type: "Warning",
+            level: level,
+            reason: reason
         });
 
         if (req.io) req.io.to(employee._id.toString()).emit('new_notification', empNotif);
@@ -947,7 +949,9 @@ adminRouter.post('/employees/:id/warnings', userAuth, adminAuth, async (req, res
                 recipient: admin._id,
                 title: "Audit: Warning Issued",
                 message: `${req.user.name} issued a ${level} warning to ${employee.name}.`,
-                type: "System"
+                type: "System",
+                level: level,
+                reason: reason
             });
 
             if (req.io) req.io.to(admin._id.toString()).emit('new_notification', adminNotif);

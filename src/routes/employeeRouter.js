@@ -6,6 +6,8 @@ const Attendance = require('../models/Attendance');
 const User = require('../models/User');
 const Task = require('../models/Task');
 const Notification = require('../models/Notification');
+const bcrypt = require('bcrypt')
+const isValidator = require('validator');
 
 // Import all specific email templates
 const {
@@ -603,22 +605,49 @@ employeeRouter.put('/profile/password', userAuth, async (req, res) => {
     try {
         const { newPassword } = req.body;
 
+        // 1. Check for missing input or insufficient length
         if (!newPassword || newPassword.length < 6) {
-            return res.status(400).json({ success: false, message: "Password must be at least 6 characters long." });
+            return res.status(400).json({
+                success: false,
+                message: "Please enter a new password that is at least 6 characters long."
+            });
         }
 
-        const employee = await User.findById(req.user._id);
-        if (!employee) return res.status(404).json({ success: false, message: "User not found." });
+        // 2. Check password complexity (assuming isValidator checks for numbers/symbols/cases)
+        if (!isValidator.isStrongPassword(newPassword)) {
+            return res.status(400).json({
+                success: false,
+                message: "For your security, please choose a stronger password containing a mix of letters, numbers, and special characters."
+            });
+        }
 
-        // Hash the new password and save
+        // 3. Find the user
+        const employee = await User.findById(req.user._id);
+        if (!employee) {
+            return res.status(404).json({
+                success: false,
+                message: "We couldn't locate your account details. Please try logging out and back in."
+            });
+        }
+
+        // 4. Hash the new password and save
         const hashedPassword = await bcrypt.hash(newPassword, 10);
         employee.password = hashedPassword;
         await employee.save();
 
-        res.status(200).json({ success: true, message: "Password updated successfully." });
+        res.status(200).json({
+            success: true,
+            message: "Success! Your password has been safely updated."
+        });
+
     } catch (error) {
         console.error("Password Update Error:", error);
-        res.status(500).json({ success: false, message: "Server error updating password." });
+
+        // 5. Handle unexpected server errors gracefully
+        res.status(500).json({
+            success: false,
+            message: "Oops! Something went wrong on our end while updating your password. Please try again in a moment."
+        });
     }
 });
 
