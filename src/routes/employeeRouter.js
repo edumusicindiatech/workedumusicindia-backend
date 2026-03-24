@@ -121,10 +121,10 @@ employeeRouter.get('/my-schedule', userAuth, async (req, res) => {
         let activeAssignments = [];
 
         user.assignments.forEach(assignment => {
-            if (!assignment.allowedDays.includes(todayDayOfWeek)) return;
+            if (!assignment?.allowedDays?.includes(todayDayOfWeek)) return;
 
             const log = todaysLogs.find(l =>
-                l.school.toString() === assignment.school._id.toString() && l.band === assignment.category
+                l.school?.toString() === assignment?.school?._id.toString() && l?.band === assignment.category
             );
 
             // Hide completed shifts or marked absences/holidays
@@ -317,7 +317,7 @@ employeeRouter.post('/mark-day-status', userAuth, async (req, res) => {
         const todayString = now.toISOString().split('T')[0];
         const todayDayOfWeek = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][now.getDay()];
 
-        const todaysAssignments = employee.assignments.filter(a => a.allowedDays.includes(todayDayOfWeek));
+        const todaysAssignments = employee.assignments.filter(a => a.allowedDays?.includes(todayDayOfWeek));
         const existingRecords = await Attendance.find({ teacher: employeeId, date: todayString });
         const existingKeys = existingRecords.map(r => `${r.school.toString()}-${r.band}`);
 

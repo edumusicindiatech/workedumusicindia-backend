@@ -25,6 +25,8 @@ const getAdminAutoAbsentEmailTemplate = require('../templates/adminAutoAbsentEma
 const getEmployeeMissingReportTemplate = require('../templates/employeeMissingReportEmail');
 const getAdminMissingReportTemplate = require('../templates/adminMissingReportEmail');
 const getAdminNewEventTemplate = require('../templates/adminNewEventEmail');
+const getEmployeeAttendanceOverrideTemplate = require('../templates/employeeAttendanceOverrideEmail');
+const getAdminAttendanceOverrideAlertTemplate = require('../templates/adminAttendanceOverrideEmail');
 
 require('dotenv').config();
 
@@ -376,6 +378,28 @@ const sendAdminNewEventAlert = async (adminEmail, adminName, employeeName, schoo
     } catch (e) { console.error("New Event Email Error:", e); }
 };
 
+const sendEmployeeAttendanceOverrideEmail = async (email, employeeName, adminName, date, schoolName, newStatus, reason) => {
+    try {
+        await transporter.sendMail({
+            from: process.env.EMAIL_FROM,
+            to: email,
+            subject: `Admin Override: Attendance Updated for ${schoolName}`,
+            html: getEmployeeAttendanceOverrideTemplate(employeeName, adminName, date, schoolName, newStatus, reason)
+        });
+    } catch (e) { console.error("Employee Override Email Error:", e); }
+};
+
+const sendAdminAttendanceOverrideAlert = async (adminEmail, adminName, actionAdminName, employeeName, schoolName, date, newStatus, reason) => {
+    try {
+        await transporter.sendMail({
+            from: process.env.EMAIL_FROM,
+            to: adminEmail,
+            subject: `[Audit] Attendance Override: ${employeeName}`,
+            html: getAdminAttendanceOverrideAlertTemplate(adminName, actionAdminName, employeeName, schoolName, date, newStatus, reason)
+        });
+    } catch (e) { console.error("Admin Override Alert Email Error:", e); }
+};
+
 module.exports = {
     sendAdminWelcomeEmail,
     sendEmployeeWelcomeEmail,
@@ -403,5 +427,7 @@ module.exports = {
     sendAdminAutoAbsentAlert,
     sendEmployeeMissingReportAlert,
     sendAdminMissingReportAlert,
-    sendAdminNewEventAlert
+    sendAdminNewEventAlert,
+    sendEmployeeAttendanceOverrideEmail,
+    sendAdminAttendanceOverrideAlert
 };
