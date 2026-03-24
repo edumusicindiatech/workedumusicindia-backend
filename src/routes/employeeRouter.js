@@ -476,6 +476,10 @@ employeeRouter.get('/assigned-schools', userAuth, async (req, res) => {
             schoolsMap[schoolId].categories.push({
                 id: assignment._id,
                 name: assignment.category,
+                startTime: assignment.startTime,
+                endTime: assignment.endTime,
+                allowedDays: assignment.allowedDays,
+                geofence: assignment.geofence,
                 stats,
                 history
             });
