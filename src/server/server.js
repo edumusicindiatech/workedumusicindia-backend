@@ -15,6 +15,7 @@ const communicationRouter = require('../routes/communicationRouter');
 const progressRouter = require('../routes/progressRouter');
 const startDailyReportsCron = require('../jobs/dailyReportReminder');
 const startAutoAbsentCron = require('../jobs/autoAbsentCron');
+const startCheckoutReminderCron = require('../jobs/checkoutReminderCron');
 
 const app = express();
 const server = http.createServer(app);
@@ -42,6 +43,7 @@ io.on('connection', (socket) => {
 startShiftWarningCron(io);
 startDailyReportsCron(io);
 startAutoAbsentCron(io);
+startCheckoutReminderCron(io);
 
 app.use((req, res, next) => {
     req.io = io;

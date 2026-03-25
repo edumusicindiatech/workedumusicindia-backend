@@ -29,6 +29,8 @@ const getEmployeeAttendanceOverrideTemplate = require('../templates/employeeAtte
 const getAdminAttendanceOverrideAlertTemplate = require('../templates/adminAttendanceOverrideEmail');
 const getEmployeeAutoAbsentWarningEmail = require('../templates/employeeAutoAbsentWarningEmail');
 const getEmployeeAutoAbsentEmail = require('../templates/employeeAutoAbsentEmail');
+const getEmployeeCheckoutReminderEmail = require('../templates/employeeCheckoutEmail');
+const getAdminCheckoutAlertEmail = require('../templates/adminCheckoutAlertEmail');
 
 require('dotenv').config();
 
@@ -425,6 +427,31 @@ const sendEmployeeAutoAbsentAlert = async (email, employeeName, schoolName, cate
         return true;
     } catch (e) { console.error("Employee Auto Absent Email Error:", e); return false; }
 };
+
+const sendEmployeeCheckoutReminder = async (email, employeeName, schoolName, category, scheduledEndTime) => {
+    try {
+        await transporter.sendMail({
+            from: `"Operations Center" <${process.env.EMAIL_FROM}>`,
+            to: email,
+            subject: `Reminder: Check out from ${schoolName}`,
+            html: getEmployeeCheckoutReminderEmail(employeeName, schoolName, category, scheduledEndTime)
+        });
+        return true;
+    } catch (e) { console.error("Employee Checkout Reminder Email Error:", e); return false; }
+};
+
+const sendAdminCheckoutAlert = async (adminEmail, adminName, employeeName, schoolName, category, scheduledEndTime) => {
+    try {
+        await transporter.sendMail({
+            from: `"Operations Center" <${process.env.EMAIL_FROM}>`,
+            to: adminEmail,
+            subject: `[Monitor] Overdue Checkout: ${employeeName}`,
+            html: getAdminCheckoutAlertEmail(adminName, employeeName, schoolName, category, scheduledEndTime)
+        });
+        return true;
+    } catch (e) { console.error("Admin Checkout Alert Email Error:", e); return false; }
+};
+
 module.exports = {
     sendAdminWelcomeEmail,
     sendEmployeeWelcomeEmail,
@@ -456,6 +483,7 @@ module.exports = {
     sendEmployeeAttendanceOverrideEmail,
     sendAdminAttendanceOverrideAlert,
     sendEmployeeAutoAbsentWarning,
-    sendEmployeeAutoAbsentAlert
-
+    sendEmployeeAutoAbsentAlert,
+    sendEmployeeCheckoutReminder,
+    sendAdminCheckoutAlert
 };
