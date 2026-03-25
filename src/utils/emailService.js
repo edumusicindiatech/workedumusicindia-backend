@@ -27,6 +27,8 @@ const getAdminMissingReportTemplate = require('../templates/adminMissingReportEm
 const getAdminNewEventTemplate = require('../templates/adminNewEventEmail');
 const getEmployeeAttendanceOverrideTemplate = require('../templates/employeeAttendanceOverrideEmail');
 const getAdminAttendanceOverrideAlertTemplate = require('../templates/adminAttendanceOverrideEmail');
+const getEmployeeAutoAbsentWarningEmail = require('../templates/employeeAutoAbsentWarningEmail');
+const getEmployeeAutoAbsentEmail = require('../templates/employeeAutoAbsentEmail');
 
 require('dotenv').config();
 
@@ -400,6 +402,29 @@ const sendAdminAttendanceOverrideAlert = async (adminEmail, adminName, actionAdm
     } catch (e) { console.error("Admin Override Alert Email Error:", e); }
 };
 
+const sendEmployeeAutoAbsentWarning = async (email, employeeName, schoolName, category, scheduledTime) => {
+    try {
+        await transporter.sendMail({
+            from: `"Operations Center" <${process.env.EMAIL_FROM}>`,
+            to: email,
+            subject: `⚠️ ACTION REQUIRED: 15 mins left to check-in for ${schoolName}`,
+            html: getEmployeeAutoAbsentWarningEmail(employeeName, schoolName, category, scheduledTime)
+        });
+        return true;
+    } catch (e) { console.error("Auto Absent Warning Email Error:", e); return false; }
+};
+
+const sendEmployeeAutoAbsentAlert = async (email, employeeName, schoolName, category, scheduledTime) => {
+    try {
+        await transporter.sendMail({
+            from: `"Operations Center" <${process.env.EMAIL_FROM}>`,
+            to: email,
+            subject: `🚨 Automatically Marked Absent for ${schoolName}`,
+            html: getEmployeeAutoAbsentEmail(employeeName, schoolName, category, scheduledTime)
+        });
+        return true;
+    } catch (e) { console.error("Employee Auto Absent Email Error:", e); return false; }
+};
 module.exports = {
     sendAdminWelcomeEmail,
     sendEmployeeWelcomeEmail,
@@ -429,5 +454,8 @@ module.exports = {
     sendAdminMissingReportAlert,
     sendAdminNewEventAlert,
     sendEmployeeAttendanceOverrideEmail,
-    sendAdminAttendanceOverrideAlert
+    sendAdminAttendanceOverrideAlert,
+    sendEmployeeAutoAbsentWarning,
+    sendEmployeeAutoAbsentAlert
+
 };
