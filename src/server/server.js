@@ -43,7 +43,7 @@ app.use((req, res, next) => {
 
 app.use(cookieParser());
 app.use(cors({
-    origin: ['http://localhost:5173', process.env.FRONTEND_URL, 'https://mmtc-frontend.vercel.app'],
+    origin: ['http://localhost:5173', process.env.FRONTEND_URL, 'https://www.workedumusicindia.com'],
     credentials: true
 }));
 app.use(express.json());
