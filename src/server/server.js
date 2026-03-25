@@ -16,6 +16,7 @@ const progressRouter = require('../routes/progressRouter');
 const startDailyReportsCron = require('../jobs/dailyReportReminder');
 const startAutoAbsentCron = require('../jobs/autoAbsentCron');
 const startCheckoutReminderCron = require('../jobs/checkoutReminderCron');
+const startKeepAliveCron = require('../jobs/keepAliveCron');
 
 const app = express();
 const server = http.createServer(app);
@@ -44,10 +45,15 @@ startShiftWarningCron(io);
 startDailyReportsCron(io);
 startAutoAbsentCron(io);
 startCheckoutReminderCron(io);
+startKeepAliveCron();
 
 app.use((req, res, next) => {
     req.io = io;
     next();
+});
+
+app.get('/health', (req, res) => {
+    res.status(200).send('Server is awake and healthy.');
 });
 
 app.use(cookieParser());
