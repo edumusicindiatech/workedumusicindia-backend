@@ -20,7 +20,7 @@ const server = http.createServer(app);
 
 const io = new Server(server, {
     cors: {
-        origin: ['http://localhost:5173', process.env.FRONTEND_URL, 'https://mmtc-frontend.vercel.app'],
+        origin: ['http://localhost:5173', process.env.FRONTEND_URL, 'https://workedumusicindia.com'],
         credentials: true,
         methods: ["GET", "POST", "PUT", "DELETE"]
     }
