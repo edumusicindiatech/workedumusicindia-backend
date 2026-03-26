@@ -245,6 +245,25 @@ adminRouter.post('/employees/:id/assign-school', userAuth, adminAuth, async (req
         const employee = await User.findById(id);
         if (!employee) return res.status(404).json({ success: false, message: "Employee not found." });
 
+        // --- NEW LEAVE RESTRICTION CHECK ---
+        const checkStartDate = new Date(startDate);
+        const checkEndDate = endDate ? new Date(endDate) : new Date("2099-12-31T23:59:59Z"); // If no end date, assume indefinite
+
+        const overlappingLeave = await LeaveRequest.findOne({
+            employee: employee._id,
+            status: 'approved',
+            fromDate: { $lte: checkEndDate },
+            toDate: { $gte: checkStartDate }
+        });
+
+        if (overlappingLeave) {
+            return res.status(400).json({
+                success: false,
+                message: `Cannot assign schedule. ${employee.name} is on an approved leave from ${new Date(overlappingLeave.fromDate).toDateString()} to ${new Date(overlappingLeave.toDate).toDateString()}.`
+            });
+        }
+        // ------------------------------------
+
         let school = await School.findOne({ schoolName: { $regex: new RegExp(`^${schoolName}$`, 'i') } });
         if (!school) {
             school = new School({
@@ -336,6 +355,27 @@ adminRouter.put('/employees/:empId/assignments/:assignmentId', userAuth, adminAu
 
         const assignment = employee.assignments.id(assignmentId);
         if (!assignment) return res.status(404).json({ success: false, message: "Assignment not found" });
+
+        // --- NEW LEAVE RESTRICTION CHECK ---
+        const effStartDate = req.body.startDate ? new Date(req.body.startDate) : assignment.startDate;
+        const effEndDate = req.body.endDate !== undefined
+            ? (req.body.endDate ? new Date(req.body.endDate) : new Date("2099-12-31T23:59:59Z"))
+            : (assignment.endDate ? assignment.endDate : new Date("2099-12-31T23:59:59Z"));
+
+        const overlappingLeave = await LeaveRequest.findOne({
+            employee: employee._id,
+            status: 'approved',
+            fromDate: { $lte: effEndDate },
+            toDate: { $gte: effStartDate }
+        });
+
+        if (overlappingLeave) {
+            return res.status(400).json({
+                success: false,
+                message: `Cannot update schedule. ${employee.name} is on an approved leave from ${new Date(overlappingLeave.fromDate).toDateString()} to ${new Date(overlappingLeave.toDate).toDateString()} which conflicts with these dates.`
+            });
+        }
+        // ------------------------------------
 
         const changes = [];
         const fieldLabels = {
@@ -660,6 +700,23 @@ adminRouter.post('/employees/:id/assign-task', userAuth, adminAuth, async (req, 
         const employee = await User.findById(id);
         if (!employee) return res.status(404).json({ success: false, message: "Employee not found." });
 
+        // --- NEW LEAVE RESTRICTION CHECK ---
+        const today = new Date();
+        const activeLeave = await LeaveRequest.findOne({
+            employee: employee._id,
+            status: 'approved',
+            fromDate: { $lte: today },
+            toDate: { $gte: today }
+        });
+
+        if (activeLeave) {
+            return res.status(400).json({
+                success: false,
+                message: `Cannot assign task. ${employee.name} is currently on an approved leave until ${new Date(activeLeave.toDate).toDateString()}.`
+            });
+        }
+        // ------------------------------------
+
         let school = await School.findOne({ schoolName: { $regex: new RegExp(`^${schoolName}$`, 'i') } });
         if (!school) {
             school = new School({
@@ -677,6 +734,7 @@ adminRouter.post('/employees/:id/assign-task', userAuth, adminAuth, async (req, 
             teacher: id,
             school: school._id,
             taskDescription,
+            category: category || "Junior Band",
             daysAllotted,
             duration,
             timing,
@@ -743,6 +801,25 @@ adminRouter.put('/tasks/:taskId', userAuth, adminAuth, async (req, res) => {
         if (!task) return res.status(404).json({ success: false, message: "Task not found." });
 
         const employee = task.teacher;
+
+        // --- NEW LEAVE RESTRICTION CHECK ---
+        const today = new Date();
+        const activeLeave = await LeaveRequest.findOne({
+            employee: employee._id,
+            status: 'approved',
+            fromDate: { $lte: today },
+            toDate: { $gte: today }
+        });
+
+        // Block if on leave, BUT allow the update if it's just the employee accepting/rejecting it via a proxy route
+        if (activeLeave && !req.body.status) {
+            return res.status(400).json({
+                success: false,
+                message: `Cannot update task details. ${employee.name} is currently on an approved leave until ${new Date(activeLeave.toDate).toDateString()}.`
+            });
+        }
+        // ------------------------------------
+
         const schoolName = task.school.schoolName;
         const taskTitle = `Assignment at ${schoolName}`;
 
@@ -1253,7 +1330,7 @@ adminRouter.get('/events', userAuth, adminAuth, async (req, res) => {
 // ==========================================
 // 20. OVERRIDE ATTENDANCE
 // ==========================================
-adminRouter.put('/attendance/:id/override', /* adminAuth middleware if you have one */ async (req, res) => {
+adminRouter.put('/attendance/:id/override', userAuth, adminAuth, async (req, res) => {
     try {
         const { id } = req.params;
         const { action, reason, teacherId, schoolId, band, date } = req.body;

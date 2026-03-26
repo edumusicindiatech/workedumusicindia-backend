@@ -2,6 +2,7 @@ const cron = require('node-cron');
 const User = require('../models/User');
 const Attendance = require('../models/Attendance');
 const Notification = require('../models/Notification');
+const LeaveRequest = require('../models/LeaveRequest'); // <-- 1. ADDED IMPORT
 const {
     sendEmployeeAutoAbsentWarning,
     sendEmployeeAutoAbsentAlert,
@@ -18,8 +19,6 @@ const getTimeAndDateContext = (minutesToSubtract = 0) => {
     const dayFormatter = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', weekday: 'short' });
     const currentDayName = dayFormatter.format(d);
 
-    // Currently outputting 24-hour format (e.g. "14:30")
-    // If your DB uses 12-hour format (e.g., "02:30 PM"), we need to change this!
     const timeFormatter = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false });
     const targetTimeStr = timeFormatter.format(d);
 
@@ -46,7 +45,9 @@ const startAutoAbsentCron = (io) => {
             console.log(` -> 15-Min Warning searching for: Day: ${warningContext.currentDayName}, Time: ${warningContext.targetTimeStr}`);
             console.log(` -> Auto-Absent execution searching for: Day: ${absentContext.currentDayName}, Time: ${absentContext.targetTimeStr}`);
 
-            // Removed 'isActive: true' just in case that was blocking it
+            // ==========================================
+            // PHASE 1: 15-MINUTE WARNING
+            // ==========================================
             const warningEmployees = await User.find({
                 role: 'Employee',
                 assignments: { $elemMatch: { allowedDays: warningContext.currentDayName, startTime: warningContext.targetTimeStr } }
@@ -57,6 +58,23 @@ const startAutoAbsentCron = (io) => {
             }
 
             for (const employee of warningEmployees) {
+                // <-- 2. ADDED LEAVE CHECK (WARNING) -->
+                // Construct a Date object from the current dateString (e.g., "2026-03-26")
+                const todayCheck = new Date(warningContext.dateString);
+
+                const isOnLeave = await LeaveRequest.findOne({
+                    employee: employee._id,
+                    status: 'approved',
+                    fromDate: { $lte: todayCheck },
+                    toDate: { $gte: todayCheck }
+                });
+
+                if (isOnLeave) {
+                    console.log(` -> Skipping warning: ${employee.name} is on approved leave.`);
+                    continue; // Skip processing this employee entirely
+                }
+                // <------------------------------------>
+
                 const pendingAssignments = employee.assignments.filter(a =>
                     a.allowedDays.includes(warningContext.currentDayName) && a.startTime === warningContext.targetTimeStr
                 );
@@ -80,6 +98,9 @@ const startAutoAbsentCron = (io) => {
                 }
             }
 
+            // ==========================================
+            // PHASE 2: AUTO-ABSENT EXECUTION
+            // ==========================================
             const absentEmployees = await User.find({
                 role: 'Employee',
                 assignments: { $elemMatch: { allowedDays: absentContext.currentDayName, startTime: absentContext.targetTimeStr } }
@@ -90,6 +111,22 @@ const startAutoAbsentCron = (io) => {
                 const admins = await User.find({ role: { $in: ['Admin', 'SuperAdmin'] } });
 
                 for (const employee of absentEmployees) {
+                    // <-- 3. ADDED LEAVE CHECK (ABSENT) -->
+                    const todayCheck = new Date(absentContext.dateString);
+
+                    const isOnLeave = await LeaveRequest.findOne({
+                        employee: employee._id,
+                        status: 'approved',
+                        fromDate: { $lte: todayCheck },
+                        toDate: { $gte: todayCheck }
+                    });
+
+                    if (isOnLeave) {
+                        console.log(` -> Skipping auto-absent: ${employee.name} is on approved leave.`);
+                        continue; // Skip processing this employee entirely
+                    }
+                    // <------------------------------------>
+
                     const missedAssignments = employee.assignments.filter(a =>
                         a.allowedDays.includes(absentContext.currentDayName) && a.startTime === absentContext.targetTimeStr
                     );
