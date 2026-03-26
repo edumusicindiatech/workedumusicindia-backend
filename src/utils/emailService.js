@@ -31,6 +31,7 @@ const getEmployeeAutoAbsentWarningEmail = require('../templates/employeeAutoAbse
 const getEmployeeAutoAbsentEmail = require('../templates/employeeAutoAbsentEmail');
 const getEmployeeCheckoutReminderEmail = require('../templates/employeeCheckoutEmail');
 const getAdminCheckoutAlertEmail = require('../templates/adminCheckoutAlertEmail');
+const { getLeaveRequestTemplate, getLeaveApprovedTemplate, getLeaveRejectedTemplate, getLeaveRevokedTemplate } = require('../templates/leaveTemplates');
 
 require('dotenv').config();
 
@@ -452,6 +453,65 @@ const sendAdminCheckoutAlert = async (adminEmail, adminName, employeeName, schoo
     } catch (e) { console.error("Admin Checkout Alert Email Error:", e); return false; }
 };
 
+const sendLeaveRequestEmailToAdmin = async (email, adminName, employeeName, fromDate, toDate, reason) => {
+    try {
+        await transporter.sendMail({
+            from: `"HR / Operations" <${process.env.EMAIL_FROM}>`,
+            to: email,
+            subject: `Action Required: Leave Request from ${employeeName}`,
+            html: getLeaveRequestTemplate(adminName, employeeName, fromDate, toDate, reason)
+        });
+        return true;
+    } catch (e) {
+        console.error("Leave Request Email Error:", e);
+        return false;
+    }
+};
+
+const sendLeaveApprovedEmailToEmployee = async (email, employeeName, fromDate, toDate, adminRemarks) => {
+    try {
+        await transporter.sendMail({
+            from: `"HR / Operations" <${process.env.EMAIL_FROM}>`,
+            to: email,
+            subject: `Approved: Your Leave Request (${fromDate} to ${toDate})`,
+            html: getLeaveApprovedTemplate(employeeName, fromDate, toDate, adminRemarks)
+        });
+        return true;
+    } catch (e) {
+        console.error("Leave Approved Email Error:", e);
+        return false;
+    }
+};
+
+const sendLeaveRejectedEmailToEmployee = async (email, employeeName, fromDate, toDate, adminRemarks) => {
+    try {
+        await transporter.sendMail({
+            from: `"HR / Operations" <${process.env.EMAIL_FROM}>`,
+            to: email,
+            subject: `Update on your Leave Request (${fromDate} to ${toDate})`,
+            html: getLeaveRejectedTemplate(employeeName, fromDate, toDate, adminRemarks)
+        });
+        return true;
+    } catch (e) {
+        console.error("Leave Rejected Email Error:", e);
+        return false;
+    }
+};
+
+const sendLeaveRevokedEmailToAdmin = async (email, adminName, employeeName, fromDate, toDate) => {
+    try {
+        await transporter.sendMail({
+            from: `"HR / Operations" <${process.env.EMAIL_FROM}>`,
+            to: email,
+            subject: `Cancelled: Leave Request by ${employeeName}`,
+            html: getLeaveRevokedTemplate(adminName, employeeName, fromDate, toDate)
+        });
+        return true;
+    } catch (e) {
+        console.error("Leave Revoked Email Error:", e);
+        return false;
+    }
+};
 module.exports = {
     sendAdminWelcomeEmail,
     sendEmployeeWelcomeEmail,
@@ -485,5 +545,9 @@ module.exports = {
     sendEmployeeAutoAbsentWarning,
     sendEmployeeAutoAbsentAlert,
     sendEmployeeCheckoutReminder,
-    sendAdminCheckoutAlert
+    sendAdminCheckoutAlert,
+    sendLeaveRequestEmailToAdmin,
+    sendLeaveApprovedEmailToEmployee,
+    sendLeaveRejectedEmailToEmployee,
+    sendLeaveRevokedEmailToAdmin
 };

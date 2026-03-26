@@ -4,8 +4,8 @@ const notificationSchema = new mongoose.Schema({
     recipient: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true }, // Who gets it
     title: { type: String, required: true },
     message: { type: String, required: true },
-    type: { type: String, enum: ['Assignment', 'System', 'Warning', 'General', 'Deletion', 'Updation'], default: 'General' },
-    level: { type: String }, 
+    type: { type: String, enum: ['Assignment', 'System', 'Warning', 'General', 'Deletion', 'Updation', 'Leave'], default: 'General' },
+    level: { type: String },
     reason: { type: String },
     isRead: { type: Boolean, default: false }, // Crucial for the unread bell icon!
     isHidden: { type: Boolean, default: false }

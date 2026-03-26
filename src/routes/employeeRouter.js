@@ -16,10 +16,13 @@ const {
     sendAdminCheckInAlert,
     sendAdminCheckOutAlert,
     sendAdminStatusAlert,
-    sendAdminNewEventAlert
+    sendAdminNewEventAlert,
+    sendLeaveRequestEmailToAdmin,
+    sendLeaveRevokedEmailToAdmin
 } = require('../utils/emailService');
 const Media = require('../models/Media');
 const DailyReports = require('../models/DailyReports');
+const LeaveRequest = require('../models/LeaveRequest');
 
 const employeeRouter = express.Router();
 
@@ -784,6 +787,157 @@ employeeRouter.get('/tasks', userAuth, async (req, res) => {
     } catch (error) {
         console.error("Fetch Tasks Error:", error);
         res.status(500).json({ success: false, message: "Server error fetching tasks." });
+    }
+});
+
+// ==========================================
+// 17. LEAVE REQUEST STATUS
+// ==========================================
+employeeRouter.get('/leave-request/status', userAuth, async (req, res) => {
+    try {
+        const latestRequest = await LeaveRequest.findOne({ employee: req.user._id })
+            .sort({ createdAt: -1 });
+
+        if (!latestRequest) {
+            return res.status(200).json({ success: true, data: null });
+        }
+
+        const formattedData = {
+            id: latestRequest._id,
+            status: latestRequest.status,
+            fromDate: new Date(latestRequest.fromDate).toISOString().split('T')[0],
+            toDate: new Date(latestRequest.toDate).toISOString().split('T')[0],
+            reason: latestRequest.reason,
+            adminRemarks: latestRequest.adminRemarks
+        };
+
+        res.status(200).json({ success: true, data: formattedData });
+    } catch (error) {
+        console.error("Get Leave Request Status Error:", error);
+        res.status(500).json({ success: false, message: "Server error fetching leave status." });
+    }
+});
+
+// ==========================================
+// 18. SUBMIT LEAVE REQUEST
+// ==========================================
+employeeRouter.post('/leave-request', userAuth, async (req, res) => {
+    try {
+        const { fromDate, toDate, reason } = req.body;
+
+        if (!fromDate || !toDate || !reason) {
+            return res.status(400).json({ success: false, message: "All fields are required." });
+        }
+
+        const existingPending = await LeaveRequest.findOne({
+            employee: req.user._id,
+            status: 'pending'
+        });
+
+        if (existingPending) {
+            return res.status(400).json({ success: false, message: "You already have a pending leave request." });
+        }
+
+        const newLeaveRequest = new LeaveRequest({
+            employee: req.user._id,
+            fromDate,
+            toDate,
+            reason
+        });
+
+        await newLeaveRequest.save();
+
+        const formattedFromDate = new Date(fromDate).toDateString();
+        const formattedToDate = new Date(toDate).toDateString();
+
+        // 1. Send In-App Notifications (Real-time to Admins ONLY via your helper)
+        const title = 'New Leave Request';
+        const message = `${req.user.name} has requested leave from ${formattedFromDate} to ${formattedToDate}.`;
+
+        // This returns the array of admins so we can use it for emails
+        const admins = await notifyAdminsInApp(req, title, message, 'Leave');
+
+        // 2. Send Emails to the returned Admins sequentially
+        for (const admin of admins) {
+            await sendLeaveRequestEmailToAdmin(
+                admin.email,
+                admin.name,
+                req.user.name,
+                formattedFromDate,
+                formattedToDate,
+                reason
+            );
+        }
+
+        const responseData = {
+            id: newLeaveRequest._id,
+            status: newLeaveRequest.status,
+            fromDate: fromDate,
+            toDate: toDate,
+            reason: newLeaveRequest.reason
+        };
+
+        res.status(201).json({ success: true, message: "Leave request submitted successfully.", data: responseData });
+    } catch (error) {
+        console.error("Submit Leave Request Error:", error);
+        if (error.name === 'ValidationError') {
+            const messages = Object.values(error.errors).map(val => val.message);
+            return res.status(400).json({ success: false, message: messages.join(', ') });
+        }
+        res.status(500).json({ success: false, message: "Server error submitting leave request." });
+    }
+});
+
+// ==========================================
+// 19. REVOKE LEAVE REQUEST
+// ==========================================
+employeeRouter.delete('/leave-request/:id', userAuth, async (req, res) => {
+    try {
+        const leaveRequestId = req.params.id;
+        const leaveRequest = await LeaveRequest.findById(leaveRequestId);
+
+        if (!leaveRequest) {
+            return res.status(404).json({ success: false, message: "Leave request not found." });
+        }
+
+        if (leaveRequest.employee.toString() !== req.user._id.toString()) {
+            return res.status(403).json({ success: false, message: "Unauthorized to revoke this request." });
+        }
+
+        if (leaveRequest.status !== 'pending') {
+            return res.status(400).json({
+                success: false,
+                message: `Cannot revoke a request that is already ${leaveRequest.status}.`
+            });
+        }
+
+        await LeaveRequest.findByIdAndDelete(leaveRequestId);
+
+        const formattedFromDate = new Date(leaveRequest.fromDate).toDateString();
+        const formattedToDate = new Date(leaveRequest.toDate).toDateString();
+
+        // 1. Send In-App Notifications (Real-time to Admins ONLY via your helper)
+        const title = 'Leave Request Cancelled';
+        const message = `${req.user.name} has cancelled their leave request (${formattedFromDate} to ${formattedToDate}).`;
+
+        // You can use 'Deletion' or 'Leave' depending on what icon you want to show
+        const admins = await notifyAdminsInApp(req, title, message, 'Deletion');
+
+        // 2. Send Emails to the returned Admins sequentially
+        for (const admin of admins) {
+            await sendLeaveRevokedEmailToAdmin(
+                admin.email,
+                admin.name,
+                req.user.name,
+                formattedFromDate,
+                formattedToDate
+            );
+        }
+
+        res.status(200).json({ success: true, message: "Leave request revoked successfully." });
+    } catch (error) {
+        console.error("Revoke Leave Request Error:", error);
+        res.status(500).json({ success: false, message: "Server error revoking leave request." });
     }
 });
 
