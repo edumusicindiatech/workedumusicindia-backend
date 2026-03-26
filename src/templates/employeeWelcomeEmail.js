@@ -46,7 +46,7 @@ const getEmployeeWelcomeEmailTemplate = (userName, employeeId, plainTextPassword
         </style></head><body>
         <div class="container">
             <div class="logo-container">
-                <div class="logo-badge">WorkForce Pro</div>
+                <div class="logo-badge">WorkEduMusic</div>
             </div>
             <div class="badge">Welcome Aboard</div>
             <h2>Hello ${userName},</h2>

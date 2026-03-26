@@ -18,10 +18,10 @@ const getBroadcastEmailTemplate = (message, senderName = "Administration") => `
     </style></head><body>
     <div class="container">
         <div class="badge">Official Announcement</div>
-        <h2>Important Workforce Update</h2>
+        <h2>Important WorkEduMusic Update</h2>
         <div class="message-box">${message}</div>
         <p style="color: #71717a; font-size: 14px;">Sent by <strong>Admin</strong></p>
-        <p class="footer-text">This is an automated broadcast from your Workforce Management System. Please ensure you comply with the instructions above.</p>
+        <p class="footer-text">This is an automated broadcast from your WorkEduMusic Management System. Please ensure you comply with the instructions above.</p>
     </div></body></html>
 `;
 

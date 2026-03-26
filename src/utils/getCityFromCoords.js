@@ -7,7 +7,7 @@ async function getCityFromCoordinates(lat, lng) {
             `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=10&addressdetails=1`,
             {
                 headers: {
-                    'User-Agent': 'WorkforceManagerApp/1.0'
+                    'User-Agent': 'WorkEduMusicManagerApp/1.0'
                 }
             }
         );

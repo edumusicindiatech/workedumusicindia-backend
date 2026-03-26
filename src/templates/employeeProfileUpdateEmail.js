@@ -19,12 +19,12 @@ const getEmployeeProfileUpdatedTemplate = (userName) => `
     </style></head><body>
     <div class="container"><div class="badge">Security Notification</div>
     <h2>Hello ${userName},</h2>
-    <p>Please be advised that your WorkForce Pro account profile details were recently updated by an administrator.</p>
+    <p>Please be advised that your WorkEduMusic account profile details were recently updated by an administrator.</p>
     <div class="warning-box">
         <p class="warning-text">⚠️ <strong>Notice:</strong> If you did not request or authorize these changes, please contact your supervisor or the IT security team immediately.</p>
     </div>
     <p style="margin-top: 24px;">You can review your updated details by logging into your dashboard.</p>
-    <p style="font-size: 13px; color: #a1a1aa; text-align: center; margin-top: 30px; border-top: 1px solid #e4e4e7; padding-top: 20px;">Automated system security message from WorkForce Pro.</p>
+    <p style="font-size: 13px; color: #a1a1aa; text-align: center; margin-top: 30px; border-top: 1px solid #e4e4e7; padding-top: 20px;">Automated system security message from WorkEduMusic Pro.</p>
     </div></body></html>
 `;
 

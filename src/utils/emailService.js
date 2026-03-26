@@ -52,7 +52,7 @@ const sendAdminWelcomeEmail = async (userEmail, adminName, adminId, plainTextPas
         const mailOptions = {
             from: process.env.EMAIL_FROM,
             to: userEmail,
-            subject: "Admin Access Granted: Your WorkForce Pro Credentials",
+            subject: "Admin Access Granted: Your WorkEduMusic Credentials",
             html: htmlContent,
         };
 
@@ -89,7 +89,7 @@ const sendEmployeeWelcomeEmail = async (userEmail, userName, employeeId, plainTe
 const sendSchoolAssignmentEmail = async (userEmail, userName, schoolName, schoolAddress, category, startDate, startTime) => {
     try {
         const mailOptions = {
-            from: process.env.EMAIL_FROM || '"WorkForce Pro" <no-reply@workforce.com>',
+            from: process.env.EMAIL_FROM || '"WorkEduMusic Pro" <no-reply@WorkEduMusic.com>',
             to: userEmail,
             subject: "New Assignment: " + schoolName,
             html: getEmployeeSchoolAssignmentEmailTemplate(userName, schoolName, schoolAddress, category, startDate, startTime)
@@ -103,7 +103,7 @@ const sendSchoolAssignmentEmail = async (userEmail, userName, schoolName, school
 const sendAdminAssignmentAlertEmail = async (adminEmail, adminName, employeeName, schoolName, schoolAddress, category, startDate) => {
     try {
         const mailOptions = {
-            from: process.env.EMAIL_FROM || '"WorkForce Pro" <no-reply@workforce.com>',
+            from: process.env.EMAIL_FROM || '"WorkEduMusic Pro" <no-reply@WorkEduMusic.com>',
             to: adminEmail,
             subject: `[Admin Alert] ${employeeName} Assigned to ${schoolName}`,
             html: getAdminSchoolAssignmentAlertTemplate(adminName, employeeName, schoolName, schoolAddress, category, startDate)
@@ -161,7 +161,7 @@ const sendEmployeeProfileDeletedEmail = async (email, name) => {
     await transporter.sendMail({
         from: process.env.EMAIL_FROM,
         to: email,
-        subject: "Account Notice: Your WorkForce Pro account was deleted",
+        subject: "Account Notice: Your WorkEduMusic Pro account was deleted",
         html: getEmployeeProfileDeletedTemplate(name)
     });
 };

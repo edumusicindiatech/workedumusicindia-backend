@@ -48,7 +48,7 @@ const getEmployeeAssignmentUpdatedTemplate = (userName, schoolName, schoolAddres
             <div class="card-item"><span class="label">Time</span><div class="value">${current.startTime} - ${current.endTime}</div></div>
             <div class="card-item"><span class="label">Working Days</span><div class="value">${current.allowedDays.join(', ')}</div></div>
         </div>
-        <p style="font-size: 13px; color: #a1a1aa; text-align: center; margin-top: 30px; border-top: 1px solid #e4e4e7; padding-top: 20px;">This is an automated system notification from WorkForce Pro.</p>
+        <p style="font-size: 13px; color: #a1a1aa; text-align: center; margin-top: 30px; border-top: 1px solid #e4e4e7; padding-top: 20px;">This is an automated system notification from WorkEduMusic.</p>
         </div></body></html>
     `;
 };

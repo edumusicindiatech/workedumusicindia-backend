@@ -46,7 +46,7 @@ const getAdminSchoolAssignmentAlertTemplate = (adminName, employeeName, schoolNa
             <div class="value">${category} &bull; Starting ${startDate}</div>
         </div>
     </div>
-    <div class="footer">WorkForce Pro Admin Alerts</div>
+    <div class="footer">WorkEduMusic Admin Alerts</div>
     </div></body></html>
 `;
 

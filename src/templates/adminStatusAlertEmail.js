@@ -28,7 +28,7 @@ const getAdminStatusAlertEmailTemplate = (adminName, employeeName, schoolName, c
         <div class="card-item"><span class="label">School & Category</span><div class="value">${schoolName} (${category})</div></div>
         <div class="card-item"><span class="label">Stated Reason</span><div class="value" style="font-weight: 400;">${reason || 'No reason provided.'}</div></div>
     </div>
-    <p class="footer-text">This is an automated system notification from WorkForce Pro.</p>
+    <p class="footer-text">This is an automated system notification from WorkEduMusic.</p>
     </div></body></html>
     `;
 };

@@ -35,7 +35,7 @@ const getEmployeeMissingReportTemplate = (employeeName, schoolName) => `
     <div class="btn-container">
         <a href="${process.env.FRONTEND_URL || 'http://localhost:5173'}/admin/reports" class="btn">Submit Report Now</a>
     </div>
-    <div class="footer">This is an automated reminder from WorkForce Pro.</div>
+    <div class="footer">This is an automated reminder from WorkEduMusic.</div>
     </div></body></html>
 `;
 

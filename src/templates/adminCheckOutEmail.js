@@ -37,7 +37,7 @@ const getAdminCheckOutEmailTemplate = (adminName, employeeName, schoolName, cate
         <div class="card-item"><span class="label">Check-Out Time</span><div class="value">${checkOutTime}</div></div>
         ${isOvertime ? `<div class="card-item"><span class="label" style="color: #d97706;">Overtime Reason</span><div class="value" style="font-weight: 400;">${overtimeReason}</div></div>` : ''}
     </div>
-    <p class="footer-text">This is an automated system notification from WorkForce Pro.</p>
+    <p class="footer-text">This is an automated system notification from WorkEduMusic.</p>
     </div></body></html>
     `;
 };

@@ -64,7 +64,7 @@ const getEmployeeAttendanceOverrideTemplate = (employeeName, adminName, date, sc
                 <p style="margin-top: 25px; font-size: 14px; color: #64748b;">If you believe this change was made in error, please contact your administrative supervisor.</p>
             </div>
             <div class="footer">
-                &copy; ${new Date().getFullYear()} WorkForce Pro. All rights reserved.
+                &copy; ${new Date().getFullYear()} WorkEduMusic. All rights reserved.
             </div>
         </div>
     </body>

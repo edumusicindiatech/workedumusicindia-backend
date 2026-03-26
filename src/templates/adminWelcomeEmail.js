@@ -46,7 +46,7 @@ const getAdminWelcomeEmailTemplate = (adminName, adminId, plainTextPassword) => 
         </style></head><body>
         <div class="container">
             <div class="logo-container">
-                <div class="logo-badge">WorkForce Pro</div>
+                <div class="logo-badge">WorkEduMusic</div>
             </div>
             <div class="badge">Account Created</div>
             <h2>Welcome to the Admin Portal, ${adminName}!</h2>
@@ -75,7 +75,7 @@ const getAdminWelcomeEmailTemplate = (adminName, adminId, plainTextPassword) => 
             
             <div class="footer">
                 Best Regards,<br>
-                <strong>WorkForce Pro Super Administration</strong>
+                <strong>WorkEduMusic Pro Super Administration</strong>
             </div>
         </div></body></html>
     `;

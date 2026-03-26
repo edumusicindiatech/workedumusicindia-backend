@@ -64,7 +64,7 @@ const getAdminAttendanceOverrideAlertTemplate = (adminName, actionAdminName, emp
                 `}
             </div>
             <div class="footer">
-                WorkForce Pro Audit System • This is an automated security log.
+                WorkEduMusic Pro Audit System • This is an automated security log.
             </div>
         </div>
     </body>

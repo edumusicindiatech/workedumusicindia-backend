@@ -33,7 +33,7 @@ const getEmployeeSchoolAssignmentEmailTemplate = (userName, schoolName, schoolAd
     }
     </style></head><body>
     <div class="container">
-        <div class="logo-container"><div class="logo-badge">WorkForce Pro</div></div>
+        <div class="logo-container"><div class="logo-badge">WorkEduMusic</div></div>
         <h2>New Assignment Alert</h2>
         <p>Hello ${userName},</p>
         <p>You have been assigned to a new location. Please review the details below to ensure you are prepared for your upcoming shift.</p>
@@ -70,7 +70,7 @@ const getEmployeeSchoolAssignmentEmailTemplate = (userName, schoolName, schoolAd
         <div class="btn-container">
             <a href="${process.env.FRONTEND_URL || 'http://localhost:5173'}/employee/dashboard" class="btn">View in Dashboard</a>
         </div>
-        <div class="footer">This is an automated message from WorkForce Pro.</div>
+        <div class="footer">This is an automated message from WorkEduMusic Pro.</div>
     </div></body></html>
 `;
 

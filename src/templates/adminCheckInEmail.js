@@ -39,7 +39,7 @@ const getAdminCheckInEmailTemplate = (adminName, employeeName, schoolName, categ
         ${lateReason ? `<div class="card-item"><span class="label" style="color: #d97706;">Late Reason</span><div class="value" style="font-weight: 400;">${lateReason}</div></div>` : ''}
         ${eventNote ? `<div class="card-item"><span class="label" style="color: #3b82f6;">Event Note</span><div class="value" style="font-weight: 400;">${eventNote}</div></div>` : ''}
     </div>
-    <p class="footer-text">This is an automated system notification from WorkForce Pro.</p>
+    <p class="footer-text">This is an automated system notification from WorkEduMusic.</p>
     </div></body></html>
     `;
 };

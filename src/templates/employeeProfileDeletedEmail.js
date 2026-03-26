@@ -17,7 +17,7 @@ const getEmployeeProfileDeletedTemplate = (userName) => `
     </style></head><body>
     <div class="container"><div class="badge">Account Terminated</div>
     <h2>Hello ${userName},</h2>
-    <p>This email is to formally notify you that your WorkForce Pro account has been permanently deleted by an administrator.</p>
+    <p>This email is to formally notify you that your WorkEduMusic account has been permanently deleted by an administrator.</p>
     <div class="card">
         <p style="margin:0; font-weight:500;">You will no longer have access to the dashboard, your schedule, or historical attendance records. If you believe this was done in error, please contact your administrative office immediately.</p>
     </div>
