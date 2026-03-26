@@ -9,6 +9,7 @@ const Notification = require('../models/Notification');
 const bcrypt = require('bcrypt')
 const isValidator = require('validator');
 const Event = require('../models/Event')
+const { canSendEmailToUser } = require('../utils/canSendEmailToUser')
 
 // Import all specific email templates
 const {
@@ -214,7 +215,8 @@ employeeRouter.post('/check-in', userAuth, async (req, res) => {
         const admins = await notifyAdminsInApp(req, `Live Check-In: ${employee.name}`, `${employee.name} checked in at ${school.schoolName}`, status === 'Late' ? "Warning" : "System");
 
         for (const admin of admins) {
-            if (admin.preferences?.adminNotifications !== false) {
+            // We now await the helper, which checks both the Global Settings and the Admin's personal toggle
+            if (await canSendEmailToUser(admin)) {
                 await sendAdminCheckInAlert(
                     admin.email, admin.name, employee.name, school.schoolName, band,
                     assignment?.startTime || 'N/A', checkInTimeStr, status, lateReason, eventNote
@@ -262,7 +264,7 @@ employeeRouter.post('/check-out', userAuth, async (req, res) => {
         const admins = await notifyAdminsInApp(req, `Check-Out: ${employee.name}`, `${employee.name} checked out of ${school.schoolName}`, overtimeReason ? "Warning" : "System");
 
         for (const admin of admins) {
-            if (admin.preferences?.adminNotifications !== false) {
+            if (await canSendEmailToUser(admin)) {
                 await sendAdminCheckOutAlert(
                     admin.email, admin.name, employee.name, school.schoolName, band,
                     checkOutTimeStr, overtimeReason
@@ -296,8 +298,10 @@ employeeRouter.post('/mark-status', userAuth, async (req, res) => {
         const admins = await notifyAdminsInApp(req, `${status} Alert: ${employee.name}`, `${employee.name} marked ${status} for ${school.schoolName}`, "Warning");
 
         for (const admin of admins) {
-            if (admin.preferences?.adminNotifications !== false) {
-                await sendAdminStatusAlert(admin.email, admin.name, employee.name, school.schoolName, band, status, reason);
+            if (await canSendEmailToUser(admin)) {
+                await sendAdminStatusAlert(
+                    admin.email, admin.name, employee.name, school.schoolName, band, status, reason
+                );
             }
         }
 
@@ -370,7 +374,7 @@ employeeRouter.post('/mark-day-status', userAuth, async (req, res) => {
                     // DELETED THE MANUAL "io.to(admin._id).emit" BLOCK HERE
 
                     // ONLY keep the email alert logic in this loop
-                    if (admin.preferences?.adminNotifications !== false) {
+                    if (await canSendEmailToUser(admin)) {
                         await sendAdminStatusAlert(admin.email, admin.name, employee.name, "All Remaining Schools", "N/A", status, reason);
                     }
                 }
@@ -436,7 +440,7 @@ employeeRouter.put('/tasks/:taskId/respond', userAuth, async (req, res) => {
         const admins = await notifyAdminsInApp(req, `Task ${status}`, `${req.user.name} has ${status.toLowerCase()} the task at ${task.school.schoolName}.`, "System");
 
         for (const admin of admins) {
-            if (admin.preferences?.adminNotifications !== false) {
+            if (await canSendEmailToUser(admin)) {
                 await sendAdminTaskResponseEmail(
                     admin.email, admin.name, req.user.name, taskTitle, status, rejectReason
                 );
@@ -859,14 +863,16 @@ employeeRouter.post('/leave-request', userAuth, async (req, res) => {
 
         // 2. Send Emails to the returned Admins sequentially
         for (const admin of admins) {
-            await sendLeaveRequestEmailToAdmin(
-                admin.email,
-                admin.name,
-                req.user.name,
-                formattedFromDate,
-                formattedToDate,
-                reason
-            );
+            if (await canSendEmailToUser(admin)) {
+                await sendLeaveRequestEmailToAdmin(
+                    admin.email,
+                    admin.name,
+                    req.user.name,
+                    formattedFromDate,
+                    formattedToDate,
+                    reason
+                );
+            }
         }
 
         const responseData = {
@@ -925,13 +931,15 @@ employeeRouter.delete('/leave-request/:id', userAuth, async (req, res) => {
 
         // 2. Send Emails to the returned Admins sequentially
         for (const admin of admins) {
-            await sendLeaveRevokedEmailToAdmin(
-                admin.email,
-                admin.name,
-                req.user.name,
-                formattedFromDate,
-                formattedToDate
-            );
+            if (await canSendEmailToUser(admin)) {
+                await sendLeaveRevokedEmailToAdmin(
+                    admin.email,
+                    admin.name,
+                    req.user.name,
+                    formattedFromDate,
+                    formattedToDate
+                );
+            }
         }
 
         res.status(200).json({ success: true, message: "Leave request revoked successfully." });

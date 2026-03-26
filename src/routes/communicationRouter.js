@@ -6,6 +6,7 @@ const Notification = require('../models/Notification');
 const userAuth = require('../middleware/userAuth');
 const adminAuth = require('../middleware/adminAuth');
 const { sendBroadcastEmail } = require('../utils/emailService');
+const { canSendEmailToUser } = require('../utils/canSendEmailToUser'); // <-- UPDATE THIS PATH
 
 // 1. GET ALL EMPLOYEES (For the "Specific People" search dropdown)
 communicationRouter.get('/employees', userAuth, adminAuth, async (req, res) => {
@@ -97,24 +98,15 @@ communicationRouter.post('/send', userAuth, adminAuth, async (req, res) => {
         }
 
         // --- 3. SEND EMAILS IN BACKGROUND ---
-        const actionAdmin = await User.findById(req.user._id);
-        const adminAllowsEmpEmails = actionAdmin.preferences?.employeeNotifications !== false;
-        const adminAllowsAdminEmails = actionAdmin.preferences?.adminNotifications !== false;
 
-        const validEmails = recipients.filter(u => {
-            if (!u.email) return false;
+        const validEmails = [];
 
-            const isRecipientAdmin = ['Admin', 'SuperAdmin'].includes(u.role);
-            const recipientPrefers = isRecipientAdmin
-                ? u.preferences?.adminNotifications !== false
-                : u.preferences?.employeeNotifications !== false;
-
-            if (!recipientPrefers) return false;
-            if (isRecipientAdmin && !adminAllowsAdminEmails) return false;
-            if (!isRecipientAdmin && !adminAllowsEmpEmails) return false;
-
-            return true;
-        }).map(u => u.email);
+        // Asynchronously check the master switch and target user preferences
+        for (const u of recipients) {
+            if (u.email && await canSendEmailToUser(u)) {
+                validEmails.push(u.email);
+            }
+        }
 
         if (validEmails.length > 0) {
             sendBroadcastEmail(validEmails, message, req.user.name).catch(console.error);
