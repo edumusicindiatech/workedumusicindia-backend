@@ -3,62 +3,52 @@ const progressRouter = express.Router();
 const User = require('../models/User');
 const Attendance = require('../models/Attendance');
 const Media = require('../models/Media');
-const DailyReport = require('../models/DailyReports')
+const DailyReport = require('../models/DailyReports');
+const LeaveRequest = require('../models/LeaveRequest'); // <-- NEW IMPORT
 const userAuth = require('../middleware/userAuth');
 const adminAuth = require('../middleware/adminAuth');
 const excelJS = require('exceljs');
 
 // ============================================================================
-// 1. GET ALL EMPLOYEES WITH WEEKLY PROGRESS SCORE (50% Attendance, 50% Media)
+// 1. GET ALL EMPLOYEES WITH WEEKLY PROGRESS SCORE
 // ============================================================================
 progressRouter.get('/employees', userAuth, adminAuth, async (req, res) => {
     try {
         const employees = await User.find({ role: 'Employee', isActive: true }).select('name zone');
 
-        // --- Get the Start of the Current Week (Monday) ---
         const today = new Date();
-        const dayOfWeek = today.getDay(); // 0 is Sunday, 1 is Monday...
+        const dayOfWeek = today.getDay();
         const diffToMonday = today.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1);
 
         const startOfWeek = new Date(today.setDate(diffToMonday));
         startOfWeek.setHours(0, 0, 0, 0);
 
-        // Format for Attendance string comparison (YYYY-MM-DD)
         const dateFormatter = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' });
         const dateString = dateFormatter.format(startOfWeek);
 
         const statsPromises = employees.map(async (emp) => {
-            // A. Fetch Attendance for current week
             const attendanceRecords = await Attendance.find({
                 teacher: emp._id,
                 date: { $gte: dateString }
             });
 
-            // B. Fetch Media Logs for current week
             const mediaLogs = await Media.find({
                 teacher: emp._id,
                 createdAt: { $gte: startOfWeek }
             });
 
             let attendanceScore = 100;
-
-            // --- 1. ATTENDANCE MATH ---
             if (attendanceRecords.length > 0) {
                 const positiveRecords = attendanceRecords.filter(r => ['Present', 'Event', 'Late'].includes(r.status)).length;
                 attendanceScore = (positiveRecords / attendanceRecords.length) * 100;
             }
 
-            // --- 2. MEDIA MATH ---
             let mediaFilesCount = 0;
-            mediaLogs.forEach(log => {
-                mediaFilesCount += log.files.length;
-            });
+            mediaLogs.forEach(log => mediaFilesCount += log.files.length);
 
-            // Target is 4 media files/videos per week. Cap at 100%
             const targetMedia = 4;
             const mediaScore = (Math.min(mediaFilesCount, targetMedia) / targetMedia) * 100;
 
-            // --- 3. FINAL SCORE (50% Attendance, 50% Media) ---
             const finalScore = Math.round((attendanceScore * 0.5) + (mediaScore * 0.5));
 
             return {
@@ -75,10 +65,7 @@ progressRouter.get('/employees', userAuth, adminAuth, async (req, res) => {
         });
 
         const progressData = await Promise.all(statsPromises);
-
-        // Sort by final score descending (Highest score is #1)
         progressData.sort((a, b) => b.score - a.score);
-
         res.json({ success: true, data: progressData });
     } catch (error) {
         console.error("Progress Calculation Error:", error);
@@ -87,24 +74,22 @@ progressRouter.get('/employees', userAuth, adminAuth, async (req, res) => {
 });
 
 // ============================================================================
-// 2. GET ALL RECORDS FOR A SPECIFIC EMPLOYEE (Used for frontend drill-down)
+// 2. GET ALL RECORDS (INCLUDING LEAVES) FOR SPECIFIC EMPLOYEE 
 // ============================================================================
 progressRouter.get('/:teacherId/records', userAuth, adminAuth, async (req, res) => {
     try {
         const teacherId = req.params.teacherId;
 
-        // Fetch Data using .lean() so we can inject new properties
+        // 1. Fetch Attendance
         const records = await Attendance.find({ teacher: teacherId })
             .populate('school', 'schoolName address')
             .sort({ date: -1 })
             .lean();
 
         const mediaLogs = await Media.find({ teacher: teacherId }).lean();
-        const dailyReports = await DailyReport.find({ teacher: teacherId }).lean(); // <-- NEW: Fetch EOD Reports
+        const dailyReports = await DailyReport.find({ teacher: teacherId }).lean();
 
-        // Attach Media Counts & Daily Reports to the specific attendance record
         records.forEach(record => {
-            // 1. Attach Media
             const matchingMedia = mediaLogs.filter(m =>
                 m.eventDate && m.eventDate.toISOString().split('T')[0] === record.date &&
                 m.school.toString() === record.school._id.toString() &&
@@ -112,17 +97,30 @@ progressRouter.get('/:teacherId/records', userAuth, adminAuth, async (req, res) 
             );
             record.mediaFilesCount = matchingMedia.reduce((sum, m) => sum + m.files.length, 0);
 
-            // 2. Attach Daily Report (Matched by date)
             const reportForDay = dailyReports.find(report => report.date === record.date);
-
-            // If the new schema report exists, attach it as an object. 
-            // Otherwise, keep the legacy string (if it exists).
             if (reportForDay) {
                 record.dailyReport = reportForDay;
             }
         });
 
-        res.json({ success: true, data: records });
+        // 2. Fetch Approved Leaves
+        const leaveRequests = await LeaveRequest.find({
+            employee: teacherId,
+            status: 'approved'
+        }).lean();
+
+        // 3. Format Leaves so frontend can group them by month
+        const formattedLeaves = leaveRequests.map(leave => ({
+            ...leave,
+            type: 'leave',
+            // Use fromDate to determine which month folder it drops into
+            date: new Date(leave.fromDate).toISOString().split('T')[0]
+        }));
+
+        // Merge Attendance and Leaves
+        const allData = [...records, ...formattedLeaves];
+
+        res.json({ success: true, data: allData });
     } catch (error) {
         console.error("Records Fetch Error:", error);
         res.status(500).json({ success: false, message: error.message });
@@ -130,73 +128,91 @@ progressRouter.get('/:teacherId/records', userAuth, adminAuth, async (req, res) 
 });
 
 // ============================================================================
-// 3. EXPORT EXCEL FOR SPECIFIC MONTH
+// 3. EXPORT EXCEL (WITH LEAVES & SUMMARY)
 // ============================================================================
 progressRouter.get('/:teacherId/export/:month', userAuth, adminAuth, async (req, res) => {
     try {
-        const { teacherId, month } = req.params; // month format: "YYYY-MM"
+        const { teacherId, month } = req.params; // "YYYY-MM"
 
         const teacher = await User.findById(teacherId);
         if (!teacher) return res.status(404).send("Teacher not found");
 
-        // Fetch Attendance
+        // 1. Fetch Attendance
         const records = await Attendance.find({
             teacher: teacherId,
             date: { $regex: `^${month}` }
         }).populate('school', 'schoolName').sort({ date: 1 }).lean();
 
-        // Fetch Media & Daily Reports
         const mediaLogs = await Media.find({ teacher: teacherId }).lean();
         const dailyReports = await DailyReport.find({
             teacher: teacherId,
             date: { $regex: `^${month}` }
-        }).lean(); // <-- NEW: Fetch EOD Reports for the month
+        }).lean();
 
+        // 2. Fetch Leaves overlapping with this month
+        const monthStart = new Date(`${month}-01T00:00:00Z`);
+        const nextMonth = new Date(monthStart);
+        nextMonth.setMonth(nextMonth.getMonth() + 1);
+
+        const leaves = await LeaveRequest.find({
+            employee: teacherId,
+            status: 'approved',
+            $or: [
+                { fromDate: { $gte: monthStart, $lt: nextMonth } },
+                { toDate: { $gte: monthStart, $lt: nextMonth } },
+                { fromDate: { $lt: monthStart }, toDate: { $gte: nextMonth } }
+            ]
+        }).sort({ fromDate: 1 }).lean();
+
+        // 3. Initialize Workbook and Tracking Stats
         const workbook = new excelJS.Workbook();
         const worksheet = workbook.addWorksheet(`${teacher.name} - ${month}`);
 
-        // Define Excel Columns
+        let stats = { present: 0, absent: 0, late: 0, event: 0, holiday: 0, leaveDays: 0, mediaSent: 0 };
+
         worksheet.columns = [
-            { header: 'Date', key: 'date', width: 15 },
-            { header: 'School Name', key: 'school', width: 30 },
-            { header: 'Category', key: 'category', width: 15 },
-            { header: 'Status', key: 'status', width: 15 },
+            { header: 'Date', key: 'date', width: 25 }, // Widened for date ranges
+            { header: 'School / Category', key: 'school', width: 30 },
+            { header: 'Band', key: 'category', width: 15 },
+            { header: 'Status', key: 'status', width: 18 },
             { header: 'Check-In', key: 'checkIn', width: 15 },
             { header: 'Check-Out', key: 'checkOut', width: 15 },
-            { header: 'Media Files Sent', key: 'mediaCount', width: 20 },
-            { header: 'Teacher Note / Reason', key: 'note', width: 40 },
-            { header: 'Daily Report', key: 'report', width: 60 } // Widened for richer data
+            { header: 'Media Files', key: 'mediaCount', width: 15 },
+            { header: 'Notes / Reason', key: 'note', width: 40 },
+            { header: 'Daily Report / Admin Note', key: 'report', width: 50 }
         ];
 
-        // Style the Header Row
-        worksheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
-        worksheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4F46E5' } };
+        // Style Headers
+        const headerColors = ["2563EB", "0D9488", "4F46E5", "7C3AED", "DB2777", "D97706", "059669", "DC2626", "475569"];
+        worksheet.getRow(1).eachCell((cell, colNumber) => {
+            cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: `FF${headerColors[(colNumber - 1) % headerColors.length]}` } };
+            cell.alignment = { horizontal: "center", vertical: "center" };
+        });
 
-        // Add Data Rows
+        // 4. Process Attendance Rows
         records.forEach(record => {
-            // Calculate Media
+            if (record.status === 'Present') stats.present++;
+            if (record.status === 'Late') stats.late++;
+            if (record.status === 'Absent') stats.absent++;
+            if (record.status === 'Event') stats.event++;
+            if (record.status === 'Holiday') stats.holiday++;
+
             const matchingMedia = mediaLogs.filter(m =>
                 m.eventDate && m.eventDate.toISOString().split('T')[0] === record.date &&
                 m.school.toString() === record.school._id.toString() &&
                 m.band === record.band
             );
             const mediaFilesCount = matchingMedia.reduce((sum, m) => sum + m.files.length, 0);
+            stats.mediaSent += mediaFilesCount;
 
-            // Format Daily Report for Excel (Convert object to readable string)
             const reportForDay = dailyReports.find(report => report.date === record.date);
-            let formattedReportString = record.dailyReport || '-'; // Legacy fallback
-
+            let formattedReportString = record.dailyReport || '-';
             if (reportForDay) {
                 formattedReportString = `[${reportForDay.category.toUpperCase()}]\nSummary: ${reportForDay.summary}`;
-                if (reportForDay.eventName) {
-                    formattedReportString += `\nEvent: ${reportForDay.eventName} (${reportForDay.eventDate})`;
-                }
-                if (reportForDay.actionItems) {
-                    formattedReportString += `\nAction Items: ${reportForDay.actionItems}`;
-                }
+                if (reportForDay.eventName) formattedReportString += `\nEvent: ${reportForDay.eventName}`;
             }
 
-            // Create Row
             const row = worksheet.addRow({
                 date: record.date,
                 school: record.school?.schoolName || 'Unknown',
@@ -206,15 +222,70 @@ progressRouter.get('/:teacherId/export/:month', userAuth, adminAuth, async (req,
                 checkOut: record.checkOutTime ? new Date(record.checkOutTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-',
                 mediaCount: mediaFilesCount,
                 note: record.teacherNote || record.lateReason || record.eventNote || record.overtimeReason || '-',
-                report: formattedReportString // Injects the formatted string
+                report: formattedReportString
             });
-
-            // Make the report cell wrap text so it looks clean in Excel
-            row.getCell('report').alignment = { wrapText: true, vertical: 'top' };
             row.getCell('note').alignment = { wrapText: true, vertical: 'top' };
+            row.getCell('report').alignment = { wrapText: true, vertical: 'top' };
         });
 
-        // Setup Response Headers for Excel Download
+        // 5. Process Leave Rows (Adds as range, counts actual days in month)
+        leaves.forEach(leave => {
+            // Calculate days for the stats summary (only counting days that fell IN this month)
+            const leaveStart = new Date(leave.fromDate);
+            const leaveEnd = new Date(leave.toDate);
+            const calcStart = leaveStart < monthStart ? monthStart : leaveStart;
+            const calcEnd = leaveEnd >= nextMonth ? new Date(nextMonth.getTime() - 1) : leaveEnd;
+            const daysInMonth = Math.round((calcEnd - calcStart) / (1000 * 60 * 60 * 24)) + 1;
+            stats.leaveDays += daysInMonth;
+
+            // Add row
+            const fromStr = leaveStart.toISOString().split('T')[0];
+            const toStr = leaveEnd.toISOString().split('T')[0];
+
+            const row = worksheet.addRow({
+                date: fromStr === toStr ? fromStr : `${fromStr} to ${toStr}`,
+                school: 'GENERAL LEAVE',
+                category: '-',
+                status: 'ON LEAVE',
+                checkIn: '-',
+                checkOut: '-',
+                mediaCount: '-',
+                note: `Reason: ${leave.reason}`,
+                report: `Admin Note: ${leave.adminRemarks || 'N/A'}`
+            });
+
+            // Style Leave rows specifically
+            row.eachCell((cell) => {
+                cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEFF6FF' } }; // Light blue
+            });
+            row.getCell('note').alignment = { wrapText: true, vertical: 'top' };
+            row.getCell('report').alignment = { wrapText: true, vertical: 'top' };
+        });
+
+        // 6. ADD EXCEL SUMMARY SECTION AT THE BOTTOM
+        worksheet.addRow([]); // Blank row
+        worksheet.addRow([]); // Blank row
+
+        const summaryHeader = worksheet.addRow(['MONTHLY SUMMARY', 'COUNT']);
+        summaryHeader.font = { bold: true, size: 12 };
+        summaryHeader.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E293B' } };
+        summaryHeader.getCell(1).color = { argb: 'FFFFFFFF' };
+        summaryHeader.getCell(2).color = { argb: 'FFFFFFFF' };
+
+        worksheet.addRow(['Total Present Days', stats.present]);
+        worksheet.addRow(['Total Late Days', stats.late]);
+        worksheet.addRow(['Total Absent Days', stats.absent]);
+        worksheet.addRow(['Total Event Days', stats.event]);
+        worksheet.addRow(['Total Holidays', stats.holiday]);
+        worksheet.addRow(['Total Leave Days (Approved)', stats.leaveDays]);
+        worksheet.addRow(['Total Media Files Submitted', stats.mediaSent]);
+
+        // Box border for summary
+        for (let i = summaryHeader.number; i <= summaryHeader.number + 7; i++) {
+            worksheet.getRow(i).getCell(1).border = { left: { style: 'thin' }, right: { style: 'thin' }, top: { style: 'thin' }, bottom: { style: 'thin' } };
+            worksheet.getRow(i).getCell(2).border = { left: { style: 'thin' }, right: { style: 'thin' }, top: { style: 'thin' }, bottom: { style: 'thin' } };
+        }
+
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
         res.setHeader('Content-Disposition', `attachment; filename=${teacher.name.replace(/\s+/g, '_')}_${month}_Report.xlsx`);
 
