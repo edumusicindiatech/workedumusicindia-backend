@@ -32,6 +32,8 @@ const getEmployeeAutoAbsentEmail = require('../templates/employeeAutoAbsentEmail
 const getEmployeeCheckoutReminderEmail = require('../templates/employeeCheckoutEmail');
 const getAdminCheckoutAlertEmail = require('../templates/adminCheckoutAlertEmail');
 const { getLeaveRequestTemplate, getLeaveApprovedTemplate, getLeaveRejectedTemplate, getLeaveRevokedTemplate } = require('../templates/leaveTemplates');
+const getMediaUploadFailureTemplate = require('../templates/employeeMediaUploadFailureEmail');
+const getNewMediaEmailTemplate = require('../templates/newMediaEmailTemplate');
 
 require('dotenv').config();
 
@@ -512,6 +514,36 @@ const sendLeaveRevokedEmailToAdmin = async (email, adminName, employeeName, from
         return false;
     }
 };
+
+const sendMediaUploadFailureEmailToEmployee = async (email, employeeName, schoolName, eventContext, failedFiles) => {
+    try {
+        await transporter.sendMail({
+            from: `"System Notifications" <${process.env.EMAIL_FROM}>`,
+            to: email,
+            subject: `⚠️ Action Required: Media Upload Failed (${eventContext})`,
+            html: getMediaUploadFailureTemplate(employeeName, schoolName, eventContext, failedFiles)
+        });
+        return true;
+    } catch (e) {
+        console.error("Media Upload Failure Email Error:", e);
+        return false;
+    }
+};
+
+const sendNewMediaEmailToAdmin = async (email, adminName, employeeName, schoolName, band, fileCount) => {
+    try {
+        await transporter.sendMail({
+            from: `"System Notifications" <${process.env.EMAIL_FROM}>`,
+            to: email,
+            subject: `New Media Upload: ${schoolName} (${band})`,
+            html: getNewMediaEmailTemplate(adminName, employeeName, schoolName, band, fileCount)
+        });
+        return true;
+    } catch (e) {
+        console.error("New Media Admin Email Error:", e);
+        return false;
+    }
+};
 module.exports = {
     sendAdminWelcomeEmail,
     sendEmployeeWelcomeEmail,
@@ -549,5 +581,7 @@ module.exports = {
     sendLeaveRequestEmailToAdmin,
     sendLeaveApprovedEmailToEmployee,
     sendLeaveRejectedEmailToEmployee,
-    sendLeaveRevokedEmailToAdmin
+    sendLeaveRevokedEmailToAdmin,
+    sendMediaUploadFailureEmailToEmployee,
+    sendNewMediaEmailToAdmin
 };

@@ -10,6 +10,12 @@ const bcrypt = require('bcrypt')
 const isValidator = require('validator');
 const Event = require('../models/Event')
 const { canSendEmailToUser } = require('../utils/canSendEmailToUser')
+const crypto = require("crypto");
+const { PutObjectCommand, DeleteObjectCommand } = require("@aws-sdk/client-s3");
+const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
+const s3Client = require("../config/s3");
+const MediaLog = require("../models/MediaLog");
+const { GetObjectCommand } = require('@aws-sdk/client-s3')
 
 // Import all specific email templates
 const {
@@ -19,11 +25,13 @@ const {
     sendAdminStatusAlert,
     sendAdminNewEventAlert,
     sendLeaveRequestEmailToAdmin,
-    sendLeaveRevokedEmailToAdmin
+    sendLeaveRevokedEmailToAdmin,
+    sendMediaUploadFailureEmailToEmployee,
+    sendNewMediaEmailToAdmin
 } = require('../utils/emailService');
-const Media = require('../models/Media');
 const DailyReports = require('../models/DailyReports');
 const LeaveRequest = require('../models/LeaveRequest');
+const path = require('path');
 
 const employeeRouter = express.Router();
 
@@ -590,7 +598,7 @@ employeeRouter.post('/media', userAuth, async (req, res) => {
     try {
         const { schoolId, band, mediaType, eventDate, eventContext, files } = req.body;
 
-        const newMediaLog = await Media.create({
+        const newMediaLog = await MediaLog.create({
             teacher: req.user._id,
             school: schoolId,
             band, mediaType, eventDate, eventContext, files
@@ -949,5 +957,287 @@ employeeRouter.delete('/leave-request/:id', userAuth, async (req, res) => {
     }
 });
 
+
+// ==========================================
+// 20. GENERATE PRE-SIGNED URLS ROUTE
+// ==========================================
+employeeRouter.post("/media/generate-urls", userAuth, async (req, res) => {
+    try {
+        if (!process.env.R2_PUBLIC_URL) {
+            return res.status(500).json({ error: "Server misconfiguration: R2_PUBLIC_URL is missing." });
+        }
+
+        const { files, metadata } = req.body;
+
+        if (!files || !Array.isArray(files) || files.length === 0) {
+            return res.status(400).json({ success: false, message: "No files provided." });
+        }
+
+        // 1. Create safe strings for the filename (replace spaces with dashes)
+        const safeSchool = (metadata?.schoolName || "Unknown-School").replace(/[^a-zA-Z0-9]/g, '-');
+        const safeBand = (metadata?.band || "Band").replace(/[^a-zA-Z0-9]/g, '-');
+        const dateStr = metadata?.eventDate || new Date().toISOString().split('T')[0];
+
+        const uploadUrls = await Promise.all(files.map(async (file) => {
+            // 2. Get the original extension (e.g., .mp4)
+            const ext = path.extname(file.name) || '.mp4';
+
+            // 3. Add a tiny random string at the end so if they upload 2 videos for the same event, they don't overwrite each other
+            const uniqueId = crypto.randomBytes(3).toString('hex');
+
+            // 4. Assemble the ultimate smart filename!
+            // Result: Lincoln-High-School-Junior-Band-2026-03-27-a1b2c3.mp4
+            const smartFileName = `${safeSchool}-${safeBand}-${dateStr}-${uniqueId}${ext}`;
+
+            // 5. Define the folder structure in Cloudflare
+            const fileKey = `media/${req.user._id}/${smartFileName}`;
+
+            const command = new PutObjectCommand({
+                Bucket: process.env.R2_BUCKET_NAME,
+                Key: fileKey,
+                ContentType: file.type,
+            });
+
+            const signedUrl = await getSignedUrl(s3Client, command, { expiresIn: 3600 });
+            const publicUrl = `${process.env.R2_PUBLIC_URL}/${fileKey}`;
+
+            return {
+                originalName: file.name,
+                smartFileName: smartFileName, // Return this so the frontend knows what it's called now
+                uploadUrl: signedUrl,
+                publicUrl: publicUrl
+            };
+        }));
+
+        res.status(200).json({ success: true, urls: uploadUrls });
+
+    } catch (error) {
+        console.error("Generate URLs Error:", error);
+        res.status(500).json({ success: false, message: "Failed to generate upload URLs." });
+    }
+});
+// ==========================================
+// 2. SAVE MEDIA LOG TO MONGODB ROUTE
+// ==========================================
+employeeRouter.post("/media/save-log", userAuth, async (req, res) => {
+    try {
+        const { schoolId, band, eventName, eventDate, studentsCount, uploadedFiles } = req.body;
+
+        const mediaType = eventName ? 'Special Event' : 'Regular Visit';
+        const finalEventDate = eventDate ? new Date(eventDate) : new Date();
+
+        // 1. Save to MongoDB
+        const newLog = new MediaLog({
+            teacher: req.user._id,
+            school: schoolId,
+            band: band,
+            mediaType: mediaType,
+            eventContext: eventName || null,
+            eventDate: finalEventDate,
+            studentRecord: studentsCount ? Number(studentsCount) : null,
+            files: uploadedFiles
+        });
+
+        await newLog.save();
+        await newLog.populate('school', 'schoolName'); // Get the name for the email
+
+        // 2. In-App Notification to Admins
+        const title = 'New Vault Media Upload';
+        const message = `${req.user.name} has uploaded ${uploadedFiles.length} new video(s) for ${newLog.school.schoolName} (${band}).`;
+
+        // Using your existing helper function
+        const admins = await notifyAdminsInApp(req, title, message, 'Media');
+
+        // 3. Send Emails to Admins sequentially
+        for (const admin of admins) {
+            if (await canSendEmailToUser(admin)) {
+                // You will need to create this email template and function, 
+                // just like you did for leave requests!
+                await sendNewMediaEmailToAdmin(
+                    admin.email,
+                    admin.name,
+                    req.user.name,
+                    newLog.school.schoolName,
+                    band,
+                    uploadedFiles.length
+                );
+            }
+        }
+
+        return res.status(201).json({ success: true, data: newLog });
+
+    } catch (error) {
+        console.error("DB Save Error:", error);
+        return res.status(500).json({ success: false, error: "Failed to save media record" });
+    }
+});
+
+employeeRouter.post('/media/send-failure-email', userAuth, async (req, res) => {
+    try {
+        const { failedFiles, eventContext, schoolId } = req.body;
+
+        if (!failedFiles || !Array.isArray(failedFiles) || failedFiles.length === 0) {
+            return res.status(400).json({ success: false, message: "Failed files list is required." });
+        }
+
+        // Fetch the school name so the email template looks correct
+        let schoolNameStr = "Assigned School";
+        if (schoolId) {
+            const school = await School.findById(schoolId).select('schoolName');
+            if (school) schoolNameStr = school.schoolName;
+        }
+
+        const finalEventContext = eventContext || "Regular Visit";
+
+        // 1. Send In-App Notification directly to the Employee
+        // (If you have a helper like `notifyEmployeeInApp`, use that here instead)
+        const title = 'Action Required: Media Upload Incomplete';
+        const message = `A network interruption occurred. ${failedFiles.length} file(s) for ${schoolNameStr} failed to upload. Please re-upload them.`;
+
+        const newNotification = new Notification({
+            recipient: req.user._id, // Targeting the employee who failed the upload
+            title: title,
+            message: message,
+            type: 'Media', // Or whatever enum categories you use
+            isRead: false
+        });
+
+        await newNotification.save();
+
+        // 2. Send Email to the Employee (using your app's standard check)
+        if (await canSendEmailToUser(req.user)) {
+            await sendMediaUploadFailureEmailToEmployee(
+                req.user.email,
+                req.user.name,
+                schoolNameStr,
+                finalEventContext,
+                failedFiles
+            );
+        }
+
+        res.status(200).json({
+            success: true,
+            message: "Failure notifications processed successfully."
+        });
+
+    } catch (error) {
+        console.error("Submit Media Failure Alert Error:", error);
+        res.status(500).json({ success: false, message: "Server error processing failure alert." });
+    }
+});
+
+employeeRouter.get("/media", userAuth, async (req, res) => {
+    try {
+        // Default to current year if none provided
+        const year = parseInt(req.query.year) || new Date().getFullYear();
+
+        // Set date boundaries for the query
+        const startDate = new Date(year, 0, 1); // Jan 1st of requested year
+        const endDate = new Date(year + 1, 0, 1); // Jan 1st of next year
+
+        const mediaLogs = await MediaLog.find({
+            teacher: req.user._id,
+            eventDate: { $gte: startDate, $lt: endDate }
+        })
+            .populate('school', 'schoolName') // Fetch the actual school name
+            .sort({ eventDate: -1 }); // Newest first
+
+        res.status(200).json({ success: true, data: mediaLogs });
+
+    } catch (error) {
+        console.error("Fetch Media Logs Error:", error);
+        res.status(500).json({ success: false, message: "Failed to fetch media gallery." });
+    }
+});
+
+employeeRouter.post("/media/generate-download-url", userAuth, async (req, res) => {
+    try {
+        const { fileUrl, fileName } = req.body;
+
+        if (!fileUrl) {
+            return res.status(400).json({ success: false, message: "File URL is required" });
+        }
+
+        // 1. Extract the exact file key from the public URL
+        // Example: https://pub-xxx.r2.dev/media/123/video.mp4 -> media/123/video.mp4
+        const urlObject = new URL(fileUrl);
+        const fileKey = urlObject.pathname.substring(1); // Removes the leading '/'
+
+        // 2. Ask Cloudflare for a URL that FORCES a download (attachment)
+        const command = new GetObjectCommand({
+            Bucket: process.env.R2_BUCKET_NAME,
+            Key: fileKey,
+            ResponseContentDisposition: `attachment; filename="${fileName}"` // <--- THIS is the magic line
+        });
+
+        // 3. Generate a quick expiring link (valid for 5 minutes)
+        const signedUrl = await getSignedUrl(s3Client, command, { expiresIn: 300 });
+
+        res.status(200).json({ success: true, downloadUrl: signedUrl });
+
+    } catch (error) {
+        console.error("Generate Download URL Error:", error);
+        res.status(500).json({ success: false, message: "Failed to generate download link" });
+    }
+});
+
+// ==========================================
+// DELETE SPECIFIC VIDEO FILE
+// ==========================================
+employeeRouter.delete("/media/file/:fileId", userAuth, async (req, res) => {
+    try {
+        const { fileId } = req.params;
+
+        // 1. Find the MediaLog that contains this specific file
+        const mediaLog = await MediaLog.findOne({
+            teacher: req.user._id,
+            "files._id": fileId
+        });
+
+        if (!mediaLog) {
+            return res.status(404).json({ success: false, message: "Media not found or unauthorized." });
+        }
+
+        // 2. Extract the specific file from the array
+        const file = mediaLog.files.id(fileId);
+
+        // 3. SECURITY CHECK: Has the admin graded it?
+        if (file.marks !== null || file.remark) {
+            return res.status(403).json({
+                success: false,
+                message: "Cannot delete a video that has already been reviewed by an Admin."
+            });
+        }
+
+        // 4. Delete the physical file from Cloudflare R2 to save storage space
+        try {
+            const urlObj = new URL(file.url);
+            const fileKey = urlObj.pathname.substring(1); // Removes the leading '/'
+
+            await s3Client.send(new DeleteObjectCommand({
+                Bucket: process.env.R2_BUCKET_NAME,
+                Key: fileKey
+            }));
+        } catch (r2Error) {
+            console.error("Failed to delete from R2, but continuing DB cleanup:", r2Error);
+        }
+
+        // 5. Remove the file from the MongoDB array
+        mediaLog.files.pull(fileId);
+
+        // 6. If that was the only video in the event, delete the whole event log
+        if (mediaLog.files.length === 0) {
+            await mediaLog.deleteOne();
+        } else {
+            await mediaLog.save();
+        }
+
+        res.status(200).json({ success: true, message: "Video deleted successfully." });
+
+    } catch (error) {
+        console.error("Delete Media Error:", error);
+        res.status(500).json({ success: false, message: "Failed to delete media." });
+    }
+});
 
 module.exports = employeeRouter;
