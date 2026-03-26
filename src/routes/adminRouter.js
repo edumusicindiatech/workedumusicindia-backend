@@ -186,7 +186,7 @@ adminRouter.get('/roster', userAuth, adminAuth, async (req, res) => {
             : { role: 'Employee' };
 
         const employees = await User.find(queryFilter)
-            .select('_id name designation zone role')
+            .select('_id name email designation zone role')
             .sort({ createdAt: -1 });
 
         const formattedRoster = employees.map(emp => ({
@@ -194,6 +194,7 @@ adminRouter.get('/roster', userAuth, adminAuth, async (req, res) => {
             name: emp.name,
             role: emp.designation || 'Unassigned',
             location: emp.zone || 'Unassigned',
+            email: emp.email,
             systemRole: emp.role
         }));
 
