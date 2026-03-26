@@ -1190,18 +1190,38 @@ adminRouter.get('/daily-feed', async (req, res) => {
 adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
     try {
         const today = new Date();
+
+        // 1. Define the 24-hour window for "Today" in IST (Kolkata)
+        const todayStart = new Date();
+        todayStart.setHours(0, 0, 0, 0);
+
+        const todayEnd = new Date();
+        todayEnd.setHours(23, 59, 59, 999);
+
+        const dateFormatter = new Intl.DateTimeFormat('en-CA', {
+            timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit'
+        });
+        const dateString = dateFormatter.format(today);
         const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
         const currentDayName = days[today.getDay()];
 
-        const dateFormatter = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' });
-        const dateString = dateFormatter.format(today);
-
+        // 2. Basic Staff Stats
         const employees = await User.find({ role: 'Employee', isActive: true });
         const totalEmployees = employees.length;
 
+        // 3. THE FIX: Count UNIQUE people on leave today
+        // .distinct('employee') ensures we count the human being, not the number of requests
+        const uniqueEmployeesOnLeave = await LeaveRequest.distinct('employee', {
+            status: 'approved',
+            fromDate: { $lte: todayEnd },
+            toDate: { $gte: todayStart }
+        });
+        const onLeaveToday = uniqueEmployeesOnLeave.length;
+
+        // 4. Calculate Expected Shifts
         let expectedShifts = 0;
         employees.forEach(emp => {
-            if (emp.assignments && emp.assignments.length > 0) {
+            if (emp.assignments?.length > 0) {
                 emp.assignments.forEach(assignment => {
                     if (assignment.allowedDays.includes(currentDayName)) {
                         expectedShifts++;
@@ -1210,10 +1230,18 @@ adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
             }
         });
 
+        // 5. Fetch Today's Attendance
         const todaysAttendance = await Attendance.find({ date: dateString })
             .populate('teacher', 'name zone')
             .populate('school', 'schoolName address')
             .sort({ createdAt: -1 });
+
+        // 6. Fetch Recent Leave Actions (Last 48 hours for the activity log)
+        const recentLeaves = await LeaveRequest.find({
+            updatedAt: { $gte: new Date(Date.now() - 48 * 60 * 60 * 1000) }
+        })
+            .populate('employee', 'name zone')
+            .sort({ updatedAt: -1 });
 
         let presentCount = 0;
         let noShowCount = 0;
@@ -1225,27 +1253,46 @@ adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
 
         const pendingCount = Math.max(0, expectedShifts - todaysAttendance.length);
 
-        const recentActivity = todaysAttendance.slice(0, 15).map(att => {
-            const timeDiffMs = new Date() - new Date(att.createdAt);
-            const diffMins = Math.round(timeDiffMs / 60000);
-            const timeAgo = diffMins < 1 ? "Just now" : diffMins < 60 ? `${diffMins} min ago` : `${Math.floor(diffMins / 60)} hr ago`;
-
+        // 7. Format Attendance for Activity Log
+        const attendanceActivity = todaysAttendance.map(att => {
+            const diffMins = Math.round((new Date() - new Date(att.createdAt)) / 60000);
             return {
                 id: att._id,
-                name: att.teacher?.name || "Unknown Teacher",
-                zone: att.teacher?.zone || "Unassigned",
+                name: att.teacher?.name || "Unknown Staff",
+                zone: att.teacher?.zone || "N/A",
                 school: att.school?.schoolName || "Unknown School",
                 category: att.band,
-                action: att.status === 'Late' ? "Late Check-in" :
-                    att.status === 'Absent' ? "Marked Absent" :
-                        att.status === 'Event' ? "Live Event Started" : "Marked Present",
-                timeAgo: timeAgo,
-                checkInTime: att.checkInTime ? new Date(att.checkInTime).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : "-",
-                status: att.status.toLowerCase() === 'present' || att.status.toLowerCase() === 'event' ? 'present' :
-                    att.status.toLowerCase() === 'absent' ? 'absent' : 'warning'
+                action: att.status === 'Late' ? "Late Check-in" : att.status === 'Absent' ? "Marked Absent" : "Marked Present",
+                time: new Date(att.checkInTime || att.createdAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+                timeAgo: diffMins < 1 ? "Just now" : diffMins < 60 ? `${diffMins}m ago` : `${Math.floor(diffMins / 60)}h ago`,
+                status: att.status,
+                createdAt: att.createdAt // Standard key for sorting
             };
         });
 
+        // 8. Format Leave Actions for Activity Log
+        const leaveActivity = recentLeaves.map(leave => {
+            const diffMins = Math.round((new Date() - new Date(leave.updatedAt)) / 60000);
+            return {
+                id: leave._id,
+                name: leave.employee?.name || "Unknown Staff",
+                zone: leave.employee?.zone || "N/A",
+                leaveRange: `${new Date(leave.fromDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })} - ${new Date(leave.toDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}`,
+                category: "Leave Request",
+                action: `Leave ${leave.status.charAt(0).toUpperCase() + leave.status.slice(1)}`,
+                time: new Date(leave.updatedAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+                timeAgo: diffMins < 1 ? "Just now" : diffMins < 60 ? `${diffMins}m ago` : `${Math.floor(diffMins / 60)}h ago`,
+                status: leave.status === 'approved' ? 'Approved' : 'Rejected',
+                createdAt: leave.updatedAt // Using updatedAt to show when the decision was made
+            };
+        });
+
+        // 9. Merge and Sort (Latest First)
+        const combinedActivity = [...attendanceActivity, ...leaveActivity]
+            .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+            .slice(0, 15);
+
+        // 10. Send Final Response
         res.json({
             success: true,
             data: {
@@ -1253,17 +1300,18 @@ adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
                     totalEmployees,
                     presentToday: presentCount,
                     noShow: noShowCount,
-                    pending: pendingCount
+                    pending: pendingCount,
+                    onLeaveToday // Represents headcount of unique persons
                 },
-                recentActivity
+                recentActivity: combinedActivity
             }
         });
+
     } catch (error) {
         console.error("Dashboard Stats Error:", error);
         res.status(500).json({ success: false, message: "Error fetching dashboard data" });
     }
 });
-
 // ==========================================
 // 18. UPDATE ACCOUNT SETTINGS (NEW ROUTE)
 // ==========================================
