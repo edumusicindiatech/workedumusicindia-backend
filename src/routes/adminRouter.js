@@ -243,11 +243,66 @@ adminRouter.post('/employees/:id/assign-school', userAuth, adminAuth, async (req
         const { id } = req.params;
         const { schoolName, schoolAddress, category, startDate, endDate, startTime, endTime, allowedDays, latitude, longitude } = req.body;
 
+        // ==========================================
+        // 1. STRICT INPUT VALIDATIONS
+        // ==========================================
+
+        // Check core required text/date fields
+        if (!schoolName || !schoolAddress || !category || !startDate || !startTime || !endTime) {
+            return res.status(400).json({
+                success: false,
+                message: "School Name, Location, Category, Start Date, Start Time, and End Time are required."
+            });
+        }
+
+        // Check if at least one working day is selected
+        if (!Array.isArray(allowedDays) || allowedDays.length === 0) {
+            return res.status(400).json({
+                success: false,
+                message: "Please select at least one working day."
+            });
+        }
+
+        // Check if coordinates exist
+        if (latitude === undefined || longitude === undefined || latitude === '' || longitude === '') {
+            return res.status(400).json({
+                success: false,
+                message: "Geofence coordinates (Latitude and Longitude) are required."
+            });
+        }
+
+        const lat = parseFloat(latitude);
+        const lng = parseFloat(longitude);
+
+        if (isNaN(lat) || isNaN(lng)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid geofence coordinates provided."
+            });
+        }
+
+        // Check if coordinates are within India's approximate geographical bounding box
+        // Latitude roughly between 6.0°N and 38.0°N
+        // Longitude roughly between 68.0°E and 98.0°E
+        if (lat < 6.0 || lat > 38.0 || lng < 68.0 || lng > 98.0) {
+            return res.status(400).json({
+                success: false,
+                message: "Coordinates must be located within India."
+            });
+        }
+
+        const checkStartDate = new Date(startDate);
+        if (isNaN(checkStartDate.getTime())) {
+            return res.status(400).json({ success: false, message: "Invalid Start Date format." });
+        }
+
+        // ==========================================
+        // 2. EMPLOYEE & LEAVE CHECKS
+        // ==========================================
+
         const employee = await User.findById(id);
         if (!employee) return res.status(404).json({ success: false, message: "Employee not found." });
 
-        // --- NEW LEAVE RESTRICTION CHECK ---
-        const checkStartDate = new Date(startDate);
         const checkEndDate = endDate ? new Date(endDate) : new Date("2099-12-31T23:59:59Z"); // If no end date, assume indefinite
 
         const overlappingLeave = await LeaveRequest.findOne({
@@ -263,24 +318,38 @@ adminRouter.post('/employees/:id/assign-school', userAuth, adminAuth, async (req
                 message: `Cannot assign schedule. ${employee.name} is on an approved leave from ${new Date(overlappingLeave.fromDate).toDateString()} to ${new Date(overlappingLeave.toDate).toDateString()}.`
             });
         }
-        // ------------------------------------
+
+        // ==========================================
+        // 3. SCHOOL CREATION / ASSIGNMENT
+        // ==========================================
 
         let school = await School.findOne({ schoolName: { $regex: new RegExp(`^${schoolName}$`, 'i') } });
         if (!school) {
             school = new School({
                 schoolName,
                 address: schoolAddress,
-                location: { type: 'Point', coordinates: [parseFloat(longitude), parseFloat(latitude)] }
+                location: { type: 'Point', coordinates: [lng, lat] } // MongoDB requires Longitude first, then Latitude
             });
             await school.save();
         }
 
         const newAssignment = {
-            school: school._id, category, startDate, endDate: endDate || null, startTime, endTime, allowedDays,
-            geofence: { latitude: parseFloat(latitude), longitude: parseFloat(longitude) }
+            school: school._id,
+            category,
+            startDate,
+            endDate: endDate || null,
+            startTime,
+            endTime,
+            allowedDays,
+            geofence: { latitude: lat, longitude: lng }
         };
+
         employee.assignments.push(newAssignment);
         await employee.save();
+
+        // ==========================================
+        // 4. NOTIFICATIONS & EMAILS
+        // ==========================================
 
         const empMsg = `You have been assigned to ${school.schoolName} for the ${category} shift starting ${startDate}.`;
         const actionAdmin = await User.findById(req.user._id);
@@ -351,16 +420,71 @@ adminRouter.post('/employees/:id/assign-school', userAuth, adminAuth, async (req
 adminRouter.put('/employees/:empId/assignments/:assignmentId', userAuth, adminAuth, async (req, res) => {
     try {
         const { empId, assignmentId } = req.params;
+        const { schoolName, schoolAddress, category, startDate, endDate, startTime, endTime, allowedDays, latitude, longitude } = req.body;
+
+        // ==========================================
+        // 1. STRICT INPUT VALIDATIONS
+        // ==========================================
+
+        // Validate Dates & Times
+        if (!startDate || !startTime || !endTime) {
+            return res.status(400).json({ success: false, message: "Start Date, Start Time, and End Time are required." });
+        }
+
+        // Validate Working Days
+        if (!Array.isArray(allowedDays) || allowedDays.length === 0) {
+            return res.status(400).json({ success: false, message: "Please select at least one working day." });
+        }
+
+        // Validate School Info (If provided in the update payload)
+        if (schoolName !== undefined && (!schoolName || String(schoolName).trim() === '')) {
+            return res.status(400).json({ success: false, message: "School Name must be filled." });
+        }
+        if (schoolAddress !== undefined && (!schoolAddress || String(schoolAddress).trim() === '')) {
+            return res.status(400).json({ success: false, message: "School Location must be filled." });
+        }
+
+        // Validate Geofence Coordinates (If provided in the update payload)
+        if (latitude !== undefined || longitude !== undefined) {
+            if (latitude === '' || longitude === '' || latitude === null || longitude === null) {
+                return res.status(400).json({ success: false, message: "Geofence coordinates are required." });
+            }
+
+            const lat = parseFloat(latitude);
+            const lng = parseFloat(longitude);
+
+            if (isNaN(lat) || isNaN(lng)) {
+                return res.status(400).json({ success: false, message: "Invalid geofence coordinates provided." });
+            }
+
+            // Check bounding box for India
+            if (lat < 6.0 || lat > 38.0 || lng < 68.0 || lng > 98.0) {
+                return res.status(400).json({ success: false, message: "Coordinates must be located within India." });
+            }
+
+            // Silent Fix: Format coordinates properly for MongoDB so Object.assign saves them correctly
+            req.body.geofence = { latitude: lat, longitude: lng };
+            delete req.body.latitude;
+            delete req.body.longitude;
+        }
+
+        // ==========================================
+        // 2. FETCH EMPLOYEE & ASSIGNMENT
+        // ==========================================
+
         const employee = await User.findById(empId).populate('assignments.school');
         if (!employee) return res.status(404).json({ success: false, message: "Employee not found" });
 
         const assignment = employee.assignments.id(assignmentId);
         if (!assignment) return res.status(404).json({ success: false, message: "Assignment not found" });
 
-        // --- NEW LEAVE RESTRICTION CHECK ---
-        const effStartDate = req.body.startDate ? new Date(req.body.startDate) : assignment.startDate;
-        const effEndDate = req.body.endDate !== undefined
-            ? (req.body.endDate ? new Date(req.body.endDate) : new Date("2099-12-31T23:59:59Z"))
+        // ==========================================
+        // 3. LEAVE RESTRICTION CHECK
+        // ==========================================
+
+        const effStartDate = startDate ? new Date(startDate) : assignment.startDate;
+        const effEndDate = endDate !== undefined
+            ? (endDate ? new Date(endDate) : new Date("2099-12-31T23:59:59Z"))
             : (assignment.endDate ? assignment.endDate : new Date("2099-12-31T23:59:59Z"));
 
         const overlappingLeave = await LeaveRequest.findOne({
@@ -376,7 +500,10 @@ adminRouter.put('/employees/:empId/assignments/:assignmentId', userAuth, adminAu
                 message: `Cannot update schedule. ${employee.name} is on an approved leave from ${new Date(overlappingLeave.fromDate).toDateString()} to ${new Date(overlappingLeave.toDate).toDateString()} which conflicts with these dates.`
             });
         }
-        // ------------------------------------
+
+        // ==========================================
+        // 4. TRACK CHANGES & SAVE
+        // ==========================================
 
         const changes = [];
         const fieldLabels = {
@@ -389,7 +516,7 @@ adminRouter.put('/employees/:empId/assignments/:assignmentId', userAuth, adminAu
         };
 
         Object.keys(req.body).forEach(key => {
-            if (!fieldLabels[key]) return;
+            if (!fieldLabels[key]) return; // Skip tracking for fields like geofence or school info
 
             let oldVal = assignment[key];
             let newVal = req.body[key];
@@ -415,14 +542,19 @@ adminRouter.put('/employees/:empId/assignments/:assignmentId', userAuth, adminAu
             }
         });
 
-        if (changes.length === 0) {
+        if (changes.length === 0 && !req.body.geofence && !req.body.schoolName) {
             return res.status(200).json({ success: true, message: "No actual changes were made." });
         }
 
+        // Apply all validated changes to the assignment
         Object.assign(assignment, req.body);
         await employee.save();
 
-        const changeSummary = changes.map(c => c.field).join(', ');
+        // ==========================================
+        // 5. NOTIFICATIONS & EMAILS
+        // ==========================================
+
+        const changeSummary = changes.map(c => c.field).join(', ') || 'Location Details';
         const empMsg = `Your schedule for ${assignment.school.schoolName} was updated (${changeSummary}).`;
 
         const empNotification = await Notification.create({
@@ -443,7 +575,7 @@ adminRouter.put('/employees/:empId/assignments/:assignmentId', userAuth, adminAu
 
         const actionAdmin = await User.findById(req.user._id);
 
-        if (canSendEmailToUser(actionAdmin, employee)) {
+        if (canSendEmailToUser(actionAdmin, employee) && changes.length > 0) {
             sendEmployeeAssignmentUpdatedEmail(
                 employee.email,
                 employee.name,
@@ -478,7 +610,7 @@ adminRouter.put('/employees/:empId/assignments/:assignmentId', userAuth, adminAu
                 });
             }
 
-            if (canSendEmailToUser(actionAdmin, admin)) {
+            if (canSendEmailToUser(actionAdmin, admin) && changes.length > 0) {
                 sendAdminAssignmentUpdatedEmail(
                     admin.email,
                     admin.name,
