@@ -1055,14 +1055,16 @@ adminRouter.get('/employees/:id/attendance', userAuth, adminAuth, async (req, re
         const employee = await User.findById(id);
         if (!employee) return res.status(404).json({ success: false, message: "Employee not found." });
 
-        // 1. Fetch Attendance (Use .lean() for faster processing)
+        // 1. Fetch Attendance & Reports
         const attendances = await Attendance.find({ teacher: id })
             .populate('school', 'schoolName')
             .sort({ date: -1 })
             .lean();
 
-        // 2. Fetch Daily Reports from the NEW schema
         const dailyReports = await DailyReports.find({ teacher: id }).lean();
+
+        // 2. Fetch Approved Leaves
+        const leaves = await LeaveRequest.find({ employee: id, status: 'approved' }).lean();
 
         const monthMap = new Map();
 
@@ -1071,11 +1073,8 @@ adminRouter.get('/employees/:id/attendance', userAuth, adminAuth, async (req, re
             return new Date(dateString).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
         };
 
-        attendances.forEach(att => {
-            const schoolName = att.school ? att.school.schoolName : "Unknown/Deleted School";
-            const schoolId = att.school ? att.school._id.toString() : "deleted-school";
-
-            const dateObj = new Date(att.date);
+        // --- HELPER: Ensure Month Exists ---
+        const getOrCreateMonth = (dateObj) => {
             const year = dateObj.getFullYear();
             const monthName = dateObj.toLocaleString('en-US', { month: 'long' });
             const monthKey = `${year}-${dateObj.getMonth() + 1}`;
@@ -1088,14 +1087,21 @@ adminRouter.get('/employees/:id/attendance', userAuth, adminAuth, async (req, re
                     schoolsMap: new Map()
                 });
             }
-            const monthObj = monthMap.get(monthKey);
+            return monthMap.get(monthKey);
+        };
+
+        // 3. Process Attendances
+        attendances.forEach(att => {
+            const schoolName = att.school ? att.school.schoolName : "Unknown/Deleted School";
+            const schoolId = att.school ? att.school._id.toString() : "deleted-school";
+
+            const dateObj = new Date(att.date);
+            const year = dateObj.getFullYear(); // <-- THE FIX: Define year here so it can be used in the loop!
+
+            const monthObj = getOrCreateMonth(dateObj);
 
             if (!monthObj.schoolsMap.has(schoolId)) {
-                monthObj.schoolsMap.set(schoolId, {
-                    id: schoolId,
-                    name: schoolName,
-                    categoriesMap: new Map()
-                });
+                monthObj.schoolsMap.set(schoolId, { id: schoolId, name: schoolName, categoriesMap: new Map() });
             }
             const schoolObj = monthObj.schoolsMap.get(schoolId);
 
@@ -1104,9 +1110,7 @@ adminRouter.get('/employees/:id/attendance', userAuth, adminAuth, async (req, re
 
             if (!schoolObj.categoriesMap.has(categoryId)) {
                 schoolObj.categoriesMap.set(categoryId, {
-                    id: categoryId,
-                    name: categoryName,
-                    recordCount: 0,
+                    id: categoryId, name: categoryName, recordCount: 0,
                     metrics: { present: 0, late: 0, absent: 0, events: 0, holidays: 0 },
                     records: []
                 });
@@ -1124,25 +1128,59 @@ adminRouter.get('/employees/:id/attendance', userAuth, adminAuth, async (req, re
             const dayName = dateObj.toLocaleString('en-US', { weekday: 'short' });
             const dayNum = dateObj.getDate().toString().padStart(2, '0');
             const shortMonth = dateObj.toLocaleString('en-US', { month: 'short' });
-
-            const formattedDate = `${shortMonth} ${dayNum}, ${year} (${dayName})`;
             const displayNote = att.teacherNote || att.lateReason || att.eventNote || null;
-
-            // --- MAGIC FIX: FIND THE MATCHING DAILY REPORT FROM THE NEW DATABASE ---
             const reportForDay = dailyReports.find(report => report.date === att.date);
 
             catObj.records.push({
                 id: att._id.toString(),
-                date: formattedDate,
+                date: `${shortMonth} ${dayNum}, ${year} (${dayName})`, // 'year' is now safely defined
+                rawDate: att.date,
                 time: formatTime(att.checkInTime) || "-",
                 status: statusUpper,
                 checkIn: formatTime(att.checkInTime),
                 checkOut: formatTime(att.checkOutTime),
-                hasReport: !!reportForDay,           // Now checks the new schema
-                dailyReport: reportForDay || null,   // Now attaches the full object
+                hasReport: !!reportForDay,
+                dailyReport: reportForDay || null,
                 teacherNote: att.teacherNote,
                 lateReason: att.lateReason,
                 note: displayNote ? `"${displayNote}"` : null
+            });
+        });
+
+        // 4. Process Leaves (Injects into the monthly hierarchy)
+        leaves.forEach(leave => {
+            const dateObj = new Date(leave.fromDate);
+            const monthObj = getOrCreateMonth(dateObj);
+
+            const schoolId = 'LEAVES_GENERAL';
+            if (!monthObj.schoolsMap.has(schoolId)) {
+                monthObj.schoolsMap.set(schoolId, { id: schoolId, name: 'General Leaves', isLeaveNode: true, categoriesMap: new Map() });
+            }
+            const schoolObj = monthObj.schoolsMap.get(schoolId);
+
+            const categoryId = 'LEAVES_DETAIL';
+            if (!schoolObj.categoriesMap.has(categoryId)) {
+                schoolObj.categoriesMap.set(categoryId, {
+                    id: categoryId, name: 'Approved Leaves', isLeaveNode: true, recordCount: 0, records: []
+                });
+            }
+            const catObj = schoolObj.categoriesMap.get(categoryId);
+
+            catObj.recordCount++;
+
+            const fromStr = dateObj.toISOString().split('T')[0];
+            const toStr = new Date(leave.toDate).toISOString().split('T')[0];
+
+            const daysDiff = Math.round((new Date(leave.toDate) - dateObj) / (1000 * 60 * 60 * 24)) + 1;
+
+            catObj.records.push({
+                id: leave._id.toString(),
+                isLeaveRecord: true,
+                date: fromStr === toStr ? fromStr : `${fromStr} to ${toStr}`,
+                leaveDays: daysDiff,
+                status: 'ON LEAVE',
+                reason: leave.reason,
+                adminRemarks: leave.adminRemarks
             });
         });
 
@@ -1152,6 +1190,7 @@ adminRouter.get('/employees/:id/attendance', userAuth, adminAuth, async (req, re
             schools: Array.from(m.schoolsMap.values()).map(s => ({
                 id: s.id,
                 name: s.name,
+                isLeaveNode: s.isLeaveNode,
                 categories: Array.from(s.categoriesMap.values())
             }))
         }));
