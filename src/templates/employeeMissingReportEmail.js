@@ -33,7 +33,7 @@ const getEmployeeMissingReportTemplate = (employeeName, schoolName) => `
     </div>
     <p>Please log in to your dashboard and submit your Daily Report immediately to maintain compliance with the scheduling guidelines.</p>
     <div class="btn-container">
-        <a href="${process.env.FRONTEND_URL || 'http://localhost:5173'}/employee/report" class="btn">Submit Report Now</a>
+        <a href="${process.env.FRONTEND_URL || 'http://localhost:5173'}/admin/reports" class="btn">Submit Report Now</a>
     </div>
     <div class="footer">This is an automated reminder from WorkForce Pro.</div>
     </div></body></html>

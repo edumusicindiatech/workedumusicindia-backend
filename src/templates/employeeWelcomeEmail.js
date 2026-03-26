@@ -70,7 +70,7 @@ const getEmployeeWelcomeEmailTemplate = (userName, employeeId, plainTextPassword
             <p>If you have any issues accessing your account, viewing your schedule, or using the live check-in features, please contact your administrator.</p>
             
             <div class="btn-container">
-                <a href="${process.env.FRONTEND_URL || 'http://localhost:5173'}/login" class="btn">Login to Dashboard</a>
+                <a href="${process.env.FRONTEND_URL || 'http://localhost:5173'}" class="btn">Login to Dashboard</a>
             </div>
             
             <div class="footer">

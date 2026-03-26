@@ -70,7 +70,7 @@ const getAdminWelcomeEmailTemplate = (adminName, adminId, plainTextPassword) => 
             <p>With your new privileges, you now have full access to manage employee rosters, oversee live attendance, and review daily compliance reports.</p>
             
             <div class="btn-container">
-                <a href="${process.env.FRONTEND_URL || 'http://localhost:5173'}/admin/login" class="btn">Access Admin Portal</a>
+                <a href="${process.env.FRONTEND_URL || 'http://localhost:5173'}" class="btn">Access Admin Portal</a>
             </div>
             
             <div class="footer">
