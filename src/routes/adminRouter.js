@@ -1470,72 +1470,69 @@ adminRouter.put('/attendance/:id/override', userAuth, adminAuth, async (req, res
 adminRouter.put('/leave-requests/:id/status', userAuth, adminAuth, async (req, res) => {
     try {
         const { id } = req.params;
-        const { status, adminRemarks } = req.body;
+        const { status, adminRemarks } = req.body; // status can be 'approved', 'rejected', or 'pending' (revoked)
 
-        // 1. Validate input
-        if (!['approved', 'rejected'].includes(status)) {
-            return res.status(400).json({ success: false, message: "Invalid status. Must be 'approved' or 'rejected'." });
-        }
-
-        // 2. Fetch the leave request and populate the employee details
         const leaveRequest = await LeaveRequest.findById(id).populate('employee');
-        if (!leaveRequest) {
-            return res.status(404).json({ success: false, message: "Leave request not found." });
-        }
+        if (!leaveRequest) return res.status(404).json({ success: false, message: "Request not found" });
 
-        // 3. Update database
+        // Update status and handle remarks
         leaveRequest.status = status;
-        if (adminRemarks) {
-            leaveRequest.adminRemarks = adminRemarks;
-        }
+        leaveRequest.adminRemarks = status === 'pending' ? "" : (adminRemarks || "");
+
         await leaveRequest.save();
 
-        const employee = leaveRequest.employee;
-        const actionAdmin = await User.findById(req.user._id);
-        const formattedFromDate = new Date(leaveRequest.fromDate).toDateString();
-        const formattedToDate = new Date(leaveRequest.toDate).toDateString();
+        const actionType = status === 'pending' ? "Revoked/Reset" : status.charAt(0).toUpperCase() + status.slice(1);
 
-        const empTitle = status === 'approved' ? 'Leave Approved' : 'Leave Rejected';
-        const empMsg = `Your leave request from ${formattedFromDate} to ${formattedToDate} has been ${status}.`;
+        // 1. Send In-App Notification to the Employee
+        const empNotif = await Notification.create({
+            recipient: leaveRequest.employee._id,
+            title: `Leave Decision ${actionType}`,
+            message: status === 'pending'
+                ? `Admin has revoked the previous decision on your leave. Status is now Pending.`
+                : `Your leave request has been ${status}.`,
+            type: "Leave"
+        });
 
-        // 4. Send Email (Non-blocking)
-        if (canSendEmailToUser(actionAdmin, employee)) {
+        if (req.io) req.io.to(leaveRequest.employee._id.toString()).emit('new_notification', empNotif);
+
+        // 2. Send Emails (ONLY if the decision is Approved or Rejected)
+        if (status === 'approved' || status === 'rejected') {
+            // Format dates nicely for the email template
+            const fromStr = new Date(leaveRequest.fromDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+            const toStr = new Date(leaveRequest.toDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+
             if (status === 'approved') {
-                sendLeaveApprovedEmailToEmployee(employee.email, employee.name, formattedFromDate, formattedToDate, adminRemarks)
-                    .catch(e => console.error("Employee email failed", e));
-            } else {
-                sendLeaveRejectedEmailToEmployee(employee.email, employee.name, formattedFromDate, formattedToDate, adminRemarks)
-                    .catch(e => console.error("Employee email failed", e));
+                await sendLeaveApprovedEmailToEmployee(
+                    leaveRequest.employee.email,
+                    leaveRequest.employee.name,
+                    fromStr,
+                    toStr,
+                    leaveRequest.adminRemarks
+                );
+            } else if (status === 'rejected') {
+                await sendLeaveRejectedEmailToEmployee(
+                    leaveRequest.employee.email,
+                    leaveRequest.employee.name,
+                    fromStr,
+                    toStr,
+                    leaveRequest.adminRemarks
+                );
             }
         }
 
-        // 5. Create In-App Notification (Database)
-        const empNotification = await Notification.create({
-            recipient: employee._id,
-            title: empTitle,
-            message: empMsg,
-            type: "Leave" // Using the new type added to your schema
+        // 3. Silent Sync: Ping all OTHER admins so their dashboard updates instantly
+        const admins = await User.find({ role: { $in: ['Admin', 'SuperAdmin'] }, _id: { $ne: req.user._id } });
+        admins.forEach(admin => {
+            if (req.io) req.io.to(admin._id.toString()).emit('new_notification', { type: "Silent_Refresh" });
         });
-
-        // 6. Emit Real-Time Socket.io Event to the Employee
-        if (req.io) {
-            req.io.to(employee._id.toString()).emit('new_notification', {
-                _id: empNotification._id,
-                title: empNotification.title,
-                message: empNotification.message,
-                timestamp: empNotification.createdAt
-            });
-        }
 
         res.status(200).json({
             success: true,
-            message: `Leave request successfully ${status}.`,
-            data: leaveRequest
+            message: `Leave decision ${actionType} successfully.`
         });
-
     } catch (error) {
-        console.error("Update Leave Request Status Error:", error);
-        res.status(500).json({ success: false, message: "Server error updating leave request." });
+        console.error("Leave Status Update Error:", error);
+        res.status(500).json({ success: false, message: "Server error updating leave status." });
     }
 });
 
@@ -1544,19 +1541,15 @@ adminRouter.put('/leave-requests/:id/status', userAuth, adminAuth, async (req, r
 // ==========================================
 adminRouter.get('/leave-requests', userAuth, adminAuth, async (req, res) => {
     try {
-        const { status } = req.query; // Optional filter: /admin/leave-requests?status=pending
+        const { status } = req.query;
 
         let query = {};
-        if (status) {
-            query.status = status;
-        }
+        if (status) query.status = status;
 
-        // Fetch requests and populate the employee's name and email
         const leaveRequests = await LeaveRequest.find(query)
             .populate('employee', 'name email')
-            .sort({ createdAt: -1 }); // Newest first
+            .sort({ updatedAt: -1, createdAt: -1 }); // Sort by newest updates first
 
-        // Format data for the frontend
         const formattedRequests = leaveRequests.map(request => ({
             id: request._id,
             employeeName: request.employee ? request.employee.name : "Unknown Employee",
@@ -1566,17 +1559,16 @@ adminRouter.get('/leave-requests', userAuth, adminAuth, async (req, res) => {
             reason: request.reason,
             status: request.status,
             adminRemarks: request.adminRemarks,
-            createdAt: request.createdAt
+            createdAt: request.createdAt,
+            updatedAt: request.updatedAt // <-- THE CRITICAL FIX FOR FRONTEND SORTING
         }));
 
         res.status(200).json({ success: true, data: formattedRequests });
-
     } catch (error) {
         console.error("Fetch Leave Requests Error:", error);
         res.status(500).json({ success: false, message: "Server error fetching leave requests." });
     }
 });
-
 
 
 module.exports = adminRouter;
