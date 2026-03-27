@@ -11,7 +11,7 @@ const isValidator = require('validator');
 const Event = require('../models/Event')
 const { canSendEmailToUser } = require('../utils/canSendEmailToUser')
 const crypto = require("crypto");
-const { PutObjectCommand, DeleteObjectCommand } = require("@aws-sdk/client-s3");
+const { PutObjectCommand, DeleteObjectCommand, CreateMultipartUploadCommand, UploadPartCommand, AbortMultipartUploadCommand, CompleteMultipartUploadCommand } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const s3Client = require("../config/s3");
 const MediaLog = require("../models/MediaLog");
@@ -1253,6 +1253,117 @@ employeeRouter.delete("/media/file/:fileId", userAuth, async (req, res) => {
     } catch (error) {
         console.error("Delete Media Error:", error);
         res.status(500).json({ success: false, message: "Failed to delete media." });
+    }
+});
+
+
+// ==========================================
+// 1. INITIATE MULTIPART UPLOAD
+// ==========================================
+employeeRouter.post('/media/multipart/create', userAuth, async (req, res) => {
+    try {
+        const { filename, type, metadata } = req.body;
+
+        if (!filename) throw new Error("Filename is missing from frontend payload");
+
+        // SMART NAMING LOGIC
+        const safeSchool = (metadata?.schoolName || "Unknown-School").replace(/[^a-zA-Z0-9]/g, '-');
+        const safeBand = (metadata?.band || "Band").replace(/[^a-zA-Z0-9]/g, '-');
+        const dateStr = metadata?.eventDate || new Date().toISOString().split('T')[0];
+
+        const fileExtension = path.extname(filename) || '.mp4';
+        const uniqueString = crypto.randomBytes(3).toString('hex');
+
+        // Final Path: media/user123/Lincoln-High-Senior-Band-2026-03-27-a1b2c3.mp4
+        const smartFileName = `${safeSchool}-${safeBand}-${dateStr}-${uniqueString}${fileExtension}`;
+        const key = `media/${req.user._id}/${smartFileName}`;
+
+        const command = new CreateMultipartUploadCommand({
+            Bucket: process.env.R2_BUCKET_NAME,
+            Key: key,
+            ContentType: type
+        });
+
+        const upload = await s3Client.send(command);
+        res.status(200).json({ uploadId: upload.UploadId, key: key });
+
+    } catch (error) {
+        console.error("🔥 CRASH IN /multipart/create:", error);
+        res.status(500).json({ error: "Failed to initiate upload. Check backend console." });
+    }
+});
+
+// ==========================================
+// 2. SIGN INDIVIDUAL CHUNKS
+// ==========================================
+employeeRouter.post('/media/multipart/sign', userAuth, async (req, res) => {
+    try {
+        const { uploadId, key, partNumber } = req.body;
+
+        const command = new UploadPartCommand({
+            Bucket: process.env.R2_BUCKET_NAME,
+            Key: key,
+            UploadId: uploadId,
+            PartNumber: partNumber,
+        });
+
+        const url = await getSignedUrl(s3Client, command, { expiresIn: 3600 });
+        res.status(200).json({ url });
+
+    } catch (error) {
+        console.error("🔥 CRASH IN /multipart/sign:", error);
+        res.status(500).json({ error: "Failed to sign part" });
+    }
+});
+
+// ==========================================
+// 3. COMPLETE AND STITCH VIDEO
+// ==========================================
+employeeRouter.post('/media/multipart/complete', userAuth, async (req, res) => {
+    try {
+        const { uploadId, key, parts } = req.body;
+
+        // Cloudflare R2 strictly requires parts to be sorted numerically
+        const sortedParts = parts.sort((a, b) => a.PartNumber - b.PartNumber);
+
+        const command = new CompleteMultipartUploadCommand({
+            Bucket: process.env.R2_BUCKET_NAME,
+            Key: key,
+            UploadId: uploadId,
+            MultipartUpload: { Parts: sortedParts }
+        });
+
+        await s3Client.send(command);
+
+        // Assuming your .env variable is R2_PUBLIC_URL (based on your older code)
+        const publicUrl = `${process.env.R2_PUBLIC_URL}/${key}`;
+        res.status(200).json({ location: publicUrl });
+
+    } catch (error) {
+        console.error("🔥 CRASH IN /multipart/complete:", error);
+        res.status(500).json({ error: "Failed to complete upload" });
+    }
+});
+
+// ==========================================
+// 4. ABORT ON CANCELLATION
+// ==========================================
+employeeRouter.post('/media/multipart/abort', userAuth, async (req, res) => {
+    try {
+        const { uploadId, key } = req.body;
+
+        const command = new AbortMultipartUploadCommand({
+            Bucket: process.env.R2_BUCKET_NAME,
+            Key: key,
+            UploadId: uploadId
+        });
+
+        await s3Client.send(command);
+        res.status(200).json({ success: true });
+
+    } catch (error) {
+        console.error("🔥 CRASH IN /multipart/abort:", error);
+        res.status(500).json({ error: "Failed to abort" });
     }
 });
 
