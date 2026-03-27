@@ -1213,11 +1213,11 @@ employeeRouter.delete("/media/file/:fileId", userAuth, async (req, res) => {
     try {
         const { fileId } = req.params;
 
-        // 1. Find the MediaLog that contains this specific file
+        // 1. Find the MediaLog and POPULATE school so we can use its name in the notification
         const mediaLog = await MediaLog.findOne({
             teacher: req.user._id,
             "files._id": fileId
-        });
+        }).populate('school', 'schoolName');
 
         if (!mediaLog) {
             return res.status(404).json({ success: false, message: "Media not found or unauthorized." });
@@ -1255,6 +1255,29 @@ employeeRouter.delete("/media/file/:fileId", userAuth, async (req, res) => {
             await mediaLog.deleteOne();
         } else {
             await mediaLog.save();
+        }
+
+        // 🔥 7. NEW: TRIGGER REAL-TIME REFRESH & ADMIN NOTIFICATIONS
+        if (req.io) {
+            const schoolName = mediaLog.school?.schoolName || "Assigned School";
+            const title = "Vault Media Deleted";
+            const message = `${req.user.name} deleted a video from ${schoolName} (${mediaLog.band}).`;
+
+            // Get all admins
+            const admins = await User.find({ role: { $in: ['Admin', 'SuperAdmin'] } });
+
+            await Promise.all(admins.map(async (admin) => {
+                // Create the notification in the DB (shows up in their Bell/Alerts tab)
+                const adminNotif = await Notification.create({
+                    recipient: admin._id,
+                    title: title,
+                    message: message,
+                    type: "Media" // <--- THIS is the magic word that triggers your gallery's silent refresh!
+                });
+
+                // Emit directly to the admin's private room
+                req.io.to(admin._id.toString()).emit('new_notification', adminNotif);
+            }));
         }
 
         res.status(200).json({ success: true, message: "Video deleted successfully." });
