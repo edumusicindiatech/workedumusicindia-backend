@@ -86,14 +86,14 @@ progressRouter.get('/:teacherId/records', userAuth, adminAuth, async (req, res) 
             .sort({ date: -1 })
             .lean();
 
-        const mediaLogs = await Media.find({ teacher: teacherId }).lean();
+        const mediaLogs = await MediaLog.find({ teacher: teacherId }).lean();
         const dailyReports = await DailyReport.find({ teacher: teacherId }).lean();
 
         records.forEach(record => {
             const matchingMedia = mediaLogs.filter(m =>
-                m.eventDate && m.eventDate.toISOString().split('T')[0] === record.date &&
-                m.school.toString() === record.school._id.toString() &&
-                m.band === record.band
+                m.eventDate && m.eventDate.toISOString().split('T')[0] === record?.date &&
+                m.school.toString() === record?.school?._id?.toString() &&
+                m.band === record?.band
             );
             record.mediaFilesCount = matchingMedia.reduce((sum, m) => sum + m.files.length, 0);
 
