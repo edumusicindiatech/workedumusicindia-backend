@@ -32,7 +32,7 @@ progressRouter.get('/employees', userAuth, adminAuth, async (req, res) => {
                 date: { $gte: dateString }
             });
 
-            const mediaLogs = await Media.find({
+            const mediaLogs = await MediaLog.find({
                 teacher: emp._id,
                 createdAt: { $gte: startOfWeek }
             });

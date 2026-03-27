@@ -34,6 +34,7 @@ const getAdminCheckoutAlertEmail = require('../templates/adminCheckoutAlertEmail
 const { getLeaveRequestTemplate, getLeaveApprovedTemplate, getLeaveRejectedTemplate, getLeaveRevokedTemplate } = require('../templates/leaveTemplates');
 const getMediaUploadFailureTemplate = require('../templates/employeeMediaUploadFailureEmail');
 const getNewMediaEmailTemplate = require('../templates/newMediaEmailTemplate');
+const { getVideoGradedTemplate } = require('../templates/employeeVideoGradedTemplateEmail');
 
 require('dotenv').config();
 
@@ -544,6 +545,21 @@ const sendNewMediaEmailToAdmin = async (email, adminName, employeeName, schoolNa
         return false;
     }
 };
+
+const sendVideoGradedEmailToEmployee = async (email, employeeName, schoolName, band, marks, remark) => {
+    try {
+        await transporter.sendMail({
+            from: `"System Notifications" <${process.env.EMAIL_FROM}>`,
+            to: email,
+            subject: `Video Graded: ${schoolName} (${marks}/100)`,
+            html: getVideoGradedTemplate(employeeName, schoolName, band, marks, remark)
+        });
+        return true;
+    } catch (e) {
+        console.error("Video Graded Email Error:", e);
+        return false;
+    }
+};
 module.exports = {
     sendAdminWelcomeEmail,
     sendEmployeeWelcomeEmail,
@@ -583,5 +599,6 @@ module.exports = {
     sendLeaveRejectedEmailToEmployee,
     sendLeaveRevokedEmailToAdmin,
     sendMediaUploadFailureEmailToEmployee,
-    sendNewMediaEmailToAdmin
+    sendNewMediaEmailToAdmin,
+    sendVideoGradedEmailToEmployee
 };

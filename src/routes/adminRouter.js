@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const validator = require('validator');
 const bcrypt = require('bcrypt');
 const adminRouter = express.Router();
-const { sendAdminWelcomeEmail, sendEmployeeWelcomeEmail, sendSchoolAssignmentEmail, sendAdminAssignmentAlertEmail, sendEmployeeAssignmentRevokedEmail, sendAdminAssignmentRevokedEmail, sendEmployeeAssignmentUpdatedEmail, sendAdminAssignmentUpdatedEmail, sendEmployeeProfileUpdatedEmail, sendAdminAuditEmail, sendEmployeeProfileDeletedEmail, sendEmployeeTaskAssignedEmail, sendAdminTaskAuditEmail, sendEmployeeTaskUpdatedEmail, sendEmployeeTaskRevokedEmail, sendEmployeeWarningEmail, sendAdminWarningAuditEmail, sendEmployeeAttendanceOverrideEmail, sendAdminAttendanceOverrideAlert, sendLeaveApprovedEmailToEmployee, sendLeaveRejectedEmailToEmployee } = require('../utils/emailService');
+const { sendAdminWelcomeEmail, sendEmployeeWelcomeEmail, sendSchoolAssignmentEmail, sendAdminAssignmentAlertEmail, sendEmployeeAssignmentRevokedEmail, sendAdminAssignmentRevokedEmail, sendEmployeeAssignmentUpdatedEmail, sendAdminAssignmentUpdatedEmail, sendEmployeeProfileUpdatedEmail, sendAdminAuditEmail, sendEmployeeProfileDeletedEmail, sendEmployeeTaskAssignedEmail, sendAdminTaskAuditEmail, sendEmployeeTaskUpdatedEmail, sendEmployeeTaskRevokedEmail, sendEmployeeWarningEmail, sendAdminWarningAuditEmail, sendEmployeeAttendanceOverrideEmail, sendAdminAttendanceOverrideAlert, sendLeaveApprovedEmailToEmployee, sendLeaveRejectedEmailToEmployee, sendVideoGradedEmailToEmployee } = require('../utils/emailService');
 const adminAuth = require('../middleware/adminAuth');
 const userAuth = require('../middleware/userAuth');
 const requireSuperAdmin = require('../middleware/requireSuperAdmin');
@@ -19,7 +19,8 @@ const Event = require('../models/Event')
 const mongoose = require('mongoose');
 const LeaveRequest = require('../models/LeaveRequest');
 const Settings = require('../models/Settings');
-const { canSendEmailToUser } = require('../utils/canSendEmailToUser')
+const { canSendEmailToUser } = require('../utils/canSendEmailToUser');
+const MediaLog = require('../models/MediaLog');
 
 // ==========================================
 // 1. CREATE ADMIN (SuperAdmin Only)
@@ -1596,7 +1597,7 @@ adminRouter.put('/attendance/:id/override', userAuth, adminAuth, async (req, res
         }
 
         // --- REAL-TIME SOCKET UPDATES ---
-        const io = req.io || req.app.get('io');
+        const io = req.io;
         if (io) {
             // 1. Tell ALL admin dashboards to refresh silently
             io.emit("operations_update", { message: "Admin override applied" });
@@ -1728,6 +1729,82 @@ adminRouter.get('/leave-requests', userAuth, adminAuth, async (req, res) => {
     } catch (error) {
         console.error("Fetch Leave Requests Error:", error);
         res.status(500).json({ success: false, message: "Server error fetching leave requests." });
+    }
+});
+
+
+adminRouter.put('/media/:logId/grade/:fileId', adminAuth, async (req, res) => {
+    try {
+        const { logId, fileId } = req.params;
+        const { marks, remark } = req.body;
+        const adminId = req.user._id;
+
+        // 1. Find the log and populate the teacher so we have their email and ID
+        const mediaLog = await MediaLog.findById(logId)
+            .populate('teacher', 'name email _id')
+            .populate('school', 'schoolName');
+
+        if (!mediaLog) return res.status(404).json({ success: false, message: "Media log not found." });
+
+        // 2. Find the specific video file
+        const file = mediaLog.files.id(fileId);
+        if (!file) return res.status(404).json({ success: false, message: "Video file not found." });
+
+        // 3. Update the grading fields
+        file.marks = marks;
+        file.remark = remark;
+        file.gradedBy = adminId;
+        file.gradedAt = new Date();
+
+        // 4. Smart Logic: Update the overall 'reviewStatus' of the Log
+        const totalFiles = mediaLog.files.length;
+        const gradedFiles = mediaLog.files.filter(f => f.marks !== null).length;
+
+        if (gradedFiles === 0) mediaLog.reviewStatus = 'Pending';
+        else if (gradedFiles === totalFiles) mediaLog.reviewStatus = 'Completed';
+        else mediaLog.reviewStatus = 'Partially Graded';
+
+        await mediaLog.save();
+
+        // 5. Create In-App Notification for the Employee
+        const notificationTitle = `Video Graded: ${mediaLog.school.schoolName}`;
+        const notificationMessage = `Admin scored your ${mediaLog.band} video ${marks}/100.`;
+
+        const newNotification = await Notification.create({
+            user: mediaLog.teacher._id, // Target the specific employee
+            title: notificationTitle,
+            message: notificationMessage,
+            type: "System",
+            read: false
+        });
+
+        // 6. Emit Real-Time Socket Event to the Employee
+        if (req.io) {
+            const employeeRoom = mediaLog.teacher._id.toString();
+
+            // Send the shiny new notification
+            req.io.to(employeeRoom).emit('new-notification', newNotification);
+
+            // Tell their browser to instantly refresh the gallery!
+            req.io.to(employeeRoom).emit('refresh-media');
+        }
+
+        // 7. Fire the Email Asynchronously (don't block the response)
+        // Assuming canSendEmailToUser is a helper you have to check notification preferences
+        sendVideoGradedEmailToEmployee(
+            mediaLog.teacher.email,
+            mediaLog.teacher.name,
+            mediaLog.school.schoolName,
+            mediaLog.band,
+            marks,
+            remark
+        );
+
+        res.status(200).json({ success: true, message: "Video graded successfully.", data: file });
+
+    } catch (error) {
+        console.error("Grading Error:", error);
+        res.status(500).json({ success: false, message: "Server error while grading video." });
     }
 });
 
