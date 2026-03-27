@@ -21,6 +21,7 @@ const mediaLogSchema = new mongoose.Schema({
     mediaType: { type: String, enum: ['Regular Visit', 'Special Event'], required: true },
     eventDate: { type: Date, required: true },
     eventContext: { type: String },
+    description: { type: String },
     studentRecord: { type: Number }, // Number of students present
 
     // The Array of Videos
