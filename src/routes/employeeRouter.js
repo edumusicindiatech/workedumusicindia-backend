@@ -1039,36 +1039,52 @@ employeeRouter.post("/media/save-log", userAuth, async (req, res) => {
         });
 
         await newLog.save();
-        await newLog.populate('school', 'schoolName'); // Get the name for the email
+        await newLog.populate('school', 'schoolName');
 
-        // 2. In-App Notification to Admins
-        const title = 'New Vault Media Upload';
-        const message = `${req.user.name} has uploaded ${uploadedFiles.length} new video(s) for ${newLog.school.schoolName} (${band}).`;
+        // 🔥 FIX 1: INSTANT RESPONSE
+        // Send success back to React before touching the email servers
+        res.status(201).json({ success: true, data: newLog });
 
-        // Using your existing helper function
-        const admins = await notifyAdminsInApp(req, title, message, 'Media');
+        // 🔥 FIX 2: BACKGROUND TASKS
+        (async () => {
+            try {
+                // In-App Notification
+                const title = 'New Vault Media Upload';
+                const message = `${req.user.name} has uploaded ${uploadedFiles.length} new video(s) for ${newLog.school.schoolName} (${band}).`;
 
-        // 3. Send Emails to Admins sequentially
-        for (const admin of admins) {
-            if (await canSendEmailToUser(admin)) {
-                // You will need to create this email template and function, 
-                // just like you did for leave requests!
-                await sendNewMediaEmailToAdmin(
-                    admin.email,
-                    admin.name,
-                    req.user.name,
-                    newLog.school.schoolName,
-                    band,
-                    uploadedFiles.length
-                );
+                const admins = await notifyAdminsInApp(req, title, message, 'Media');
+
+                // Send Emails concurrently with a timeout failsafe
+                const emailPromises = admins.map(async (admin) => {
+                    if (await canSendEmailToUser(admin)) {
+                        const emailTask = sendNewMediaEmailToAdmin(
+                            admin.email, admin.name, req.user.name,
+                            newLog.school.schoolName, band, uploadedFiles.length
+                        );
+
+                        // Failsafe: If Render's SMTP connection hangs, abort after 10s
+                        const timeoutTask = new Promise((_, reject) =>
+                            setTimeout(() => reject(new Error(`SMTP Timeout for ${admin.email}`)), 10000)
+                        );
+
+                        return Promise.race([emailTask, timeoutTask]);
+                    }
+                });
+
+                // Promise.allSettled ensures that if one email fails, the others still send
+                await Promise.allSettled(emailPromises);
+
+            } catch (bgError) {
+                console.error("Background Notification Error:", bgError);
             }
-        }
-
-        return res.status(201).json({ success: true, data: newLog });
+        })();
 
     } catch (error) {
         console.error("DB Save Error:", error);
-        return res.status(500).json({ success: false, error: "Failed to save media record" });
+        // Only trigger this if headers haven't already been sent
+        if (!res.headersSent) {
+            return res.status(500).json({ success: false, error: "Failed to save media record" });
+        }
     }
 });
 
