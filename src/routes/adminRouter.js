@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const validator = require('validator');
 const bcrypt = require('bcrypt');
 const adminRouter = express.Router();
-const { sendAdminWelcomeEmail, sendEmployeeWelcomeEmail, sendSchoolAssignmentEmail, sendAdminAssignmentAlertEmail, sendEmployeeAssignmentRevokedEmail, sendAdminAssignmentRevokedEmail, sendEmployeeAssignmentUpdatedEmail, sendAdminAssignmentUpdatedEmail, sendEmployeeProfileUpdatedEmail, sendAdminAuditEmail, sendEmployeeProfileDeletedEmail, sendEmployeeTaskAssignedEmail, sendAdminTaskAuditEmail, sendEmployeeTaskUpdatedEmail, sendEmployeeTaskRevokedEmail, sendEmployeeWarningEmail, sendAdminWarningAuditEmail, sendEmployeeAttendanceOverrideEmail, sendAdminAttendanceOverrideAlert, sendLeaveApprovedEmailToEmployee, sendLeaveRejectedEmailToEmployee, sendVideoGradedEmailToEmployee } = require('../utils/emailService');
+const { sendAdminWelcomeEmail, sendEmployeeWelcomeEmail, sendSchoolAssignmentEmail, sendAdminAssignmentAlertEmail, sendEmployeeAssignmentRevokedEmail, sendAdminAssignmentRevokedEmail, sendEmployeeAssignmentUpdatedEmail, sendAdminAssignmentUpdatedEmail, sendEmployeeProfileUpdatedEmail, sendAdminAuditEmail, sendEmployeeProfileDeletedEmail, sendEmployeeTaskAssignedEmail, sendAdminTaskAuditEmail, sendEmployeeTaskUpdatedEmail, sendEmployeeTaskRevokedEmail, sendEmployeeWarningEmail, sendAdminWarningAuditEmail, sendEmployeeAttendanceOverrideEmail, sendAdminAttendanceOverrideAlert, sendLeaveApprovedEmailToEmployee, sendLeaveRejectedEmailToEmployee, sendVideoGradedEmailToEmployee, sendVideoDeletedEmailToEmployee } = require('../utils/emailService');
 const adminAuth = require('../middleware/adminAuth');
 const userAuth = require('../middleware/userAuth');
 const requireSuperAdmin = require('../middleware/requireSuperAdmin');
@@ -1732,31 +1732,116 @@ adminRouter.get('/leave-requests', userAuth, adminAuth, async (req, res) => {
     }
 });
 
+// ==========================================
+// 23. GET EMPLOYEES FOR MEDIA VAULT
+// ==========================================
+adminRouter.get('/employees', userAuth, adminAuth, async (req, res) => {
+    try {
+        const employees = await User.find({ role: 'Employee' })
+            .select('-password')
+            .populate('assignments.school', 'schoolName address location')
+            .sort({ name: 1 });
 
-adminRouter.put('/media/:logId/grade/:fileId', adminAuth, async (req, res) => {
+        res.status(200).json({ success: true, data: employees });
+    } catch (error) {
+        console.error("Fetch Employees Error:", error);
+        res.status(500).json({ success: false, message: "Server error fetching employees." });
+    }
+});
+
+// ==========================================
+// 24. GET HISTORICAL MEDIA FILTERS
+// ==========================================
+adminRouter.get('/employees/:id/media-filters', userAuth, adminAuth, async (req, res) => {
+    try {
+        const employeeId = new mongoose.Types.ObjectId(req.params.id);
+
+        const historicalFilters = await MediaLog.aggregate([
+            { $match: { teacher: employeeId } },
+            {
+                $group: {
+                    _id: "$school",
+                    bands: { $addToSet: "$band" }
+                }
+            },
+            {
+                $lookup: {
+                    from: 'schools',
+                    localField: '_id',
+                    foreignField: '_id',
+                    as: 'schoolDetails'
+                }
+            },
+            { $unwind: "$schoolDetails" },
+            {
+                $project: {
+                    _id: 1,
+                    schoolName: "$schoolDetails.schoolName",
+                    address: "$schoolDetails.address",
+                    bands: 1
+                }
+            },
+            { $sort: { schoolName: 1 } }
+        ]);
+
+        res.status(200).json({ success: true, data: historicalFilters });
+    } catch (error) {
+        console.error("Fetch Media Filters Error:", error);
+        res.status(500).json({ success: false, message: "Server error fetching historical filters." });
+    }
+});
+
+// ==========================================
+// 25. GET MEDIA GALLERY
+// ==========================================
+adminRouter.get('/media', userAuth, adminAuth, async (req, res) => {
+    try {
+        const { teacher, school, band, year } = req.query;
+        const query = {};
+
+        if (teacher) query.teacher = teacher;
+        if (school) query.school = school;
+        if (band) query.band = band;
+
+        if (year) {
+            const startYear = new Date(year, 0, 1);
+            const endYear = new Date(parseInt(year) + 1, 0, 1);
+            query.eventDate = { $gte: startYear, $lt: endYear };
+        }
+
+        const mediaLogs = await MediaLog.find(query).sort({ eventDate: -1 });
+
+        res.status(200).json({ success: true, data: mediaLogs });
+    } catch (error) {
+        console.error("Fetch Admin Media Error:", error);
+        res.status(500).json({ success: false, message: "Server error fetching media logs." });
+    }
+});
+
+// ==========================================
+// 26. GRADE VIDEO
+// ==========================================
+adminRouter.put('/media/:logId/grade/:fileId', userAuth, adminAuth, async (req, res) => {
     try {
         const { logId, fileId } = req.params;
         const { marks, remark } = req.body;
         const adminId = req.user._id;
 
-        // 1. Find the log and populate the teacher so we have their email and ID
         const mediaLog = await MediaLog.findById(logId)
             .populate('teacher', 'name email _id')
             .populate('school', 'schoolName');
 
         if (!mediaLog) return res.status(404).json({ success: false, message: "Media log not found." });
 
-        // 2. Find the specific video file
         const file = mediaLog.files.id(fileId);
-        if (!file) return res.status(404).json({ success: false, message: "Video file not found." });
+        if (!file) return res.status(404).json({ success: false, message: "Video not found." });
 
-        // 3. Update the grading fields
         file.marks = marks;
         file.remark = remark;
         file.gradedBy = adminId;
         file.gradedAt = new Date();
 
-        // 4. Smart Logic: Update the overall 'reviewStatus' of the Log
+        // Smart Logic: Update the overall 'reviewStatus' of the Log
         const totalFiles = mediaLog.files.length;
         const gradedFiles = mediaLog.files.filter(f => f.marks !== null).length;
 
@@ -1766,39 +1851,43 @@ adminRouter.put('/media/:logId/grade/:fileId', adminAuth, async (req, res) => {
 
         await mediaLog.save();
 
-        // 5. Create In-App Notification for the Employee
-        const notificationTitle = `Video Graded: ${mediaLog.school.schoolName}`;
-        const notificationMessage = `Admin scored your ${mediaLog.band} video ${marks}/100.`;
-
+        // 1. Create the notification in the database FIRST
         const newNotification = await Notification.create({
-            user: mediaLog.teacher._id, // Target the specific employee
-            title: notificationTitle,
-            message: notificationMessage,
-            type: "System",
-            read: false
+            recipient: mediaLog.teacher._id,
+            title: `Video Graded: ${mediaLog.school.schoolName}`,
+            message: `Admin scored your ${mediaLog.band} video ${marks}/10.`,
+            type: "Media"
         });
 
-        // 6. Emit Real-Time Socket Event to the Employee
+        // 2. Real-Time Socket Notification to Employee
         if (req.io) {
-            const employeeRoom = mediaLog.teacher._id.toString();
+            const employeeIdStr = mediaLog.teacher._id.toString();
 
-            // Send the shiny new notification
-            req.io.to(employeeRoom).emit('new-notification', newNotification);
+            req.io.emit('new_notification_for_user', {
+                userId: employeeIdStr,
+                notification: newNotification
+            });
 
-            // Tell their browser to instantly refresh the gallery!
-            req.io.to(employeeRoom).emit('refresh-media');
+            // 🔥 NEW: Send the exact grading data instead of a refresh signal
+            req.io.emit('media_graded_direct', {
+                userId: employeeIdStr,
+                fileId: fileId,
+                marks: marks,
+                remark: remark
+            });
         }
 
-        // 7. Fire the Email Asynchronously (don't block the response)
-        // Assuming canSendEmailToUser is a helper you have to check notification preferences
-        sendVideoGradedEmailToEmployee(
-            mediaLog.teacher.email,
-            mediaLog.teacher.name,
-            mediaLog.school.schoolName,
-            mediaLog.band,
-            marks,
-            remark
-        );
+        // Email Fallback
+        if (await canSendEmailToUser(mediaLog.teacher)) {
+            sendVideoGradedEmailToEmployee(
+                mediaLog.teacher.email,
+                mediaLog.teacher.name,
+                mediaLog.school.schoolName,
+                mediaLog.band,
+                marks,
+                remark
+            ).catch(console.error);
+        }
 
         res.status(200).json({ success: true, message: "Video graded successfully.", data: file });
 
@@ -1808,5 +1897,46 @@ adminRouter.put('/media/:logId/grade/:fileId', adminAuth, async (req, res) => {
     }
 });
 
+// ==========================================
+// 27. ADMIN DELETE VIDEO ROUTE
+// ==========================================
+adminRouter.delete('/media/:logId/file/:fileId', userAuth, adminAuth, async (req, res) => {
+    try {
+        const { logId, fileId } = req.params;
+        const mediaLog = await MediaLog.findById(logId).populate('teacher', 'name email _id').populate('school', 'schoolName');
+
+        if (!mediaLog) return res.status(404).json({ success: false, message: "Media not found." });
+
+        mediaLog.files.pull(fileId);
+
+        if (mediaLog.files.length === 0) {
+            await mediaLog.deleteOne();
+        } else {
+            await mediaLog.save();
+        }
+
+        if (req.io) {
+            // 🔥 NEW: Send the exact ID of the deleted file
+            req.io.emit('media_deleted_direct', {
+                userId: mediaLog.teacher._id.toString(),
+                fileId: fileId
+            });
+        }
+
+        if (await canSendEmailToUser(mediaLog.teacher)) {
+            sendVideoDeletedEmailToEmployee(
+                mediaLog.teacher.email,
+                mediaLog.teacher.name,
+                mediaLog.school.schoolName,
+                mediaLog.band
+            ).catch(console.error);
+        }
+
+        res.status(200).json({ success: true, message: "Video deleted successfully." });
+    } catch (error) {
+        console.error("Delete Media Error:", error);
+        res.status(500).json({ success: false, message: "Failed to delete media." });
+    }
+});
 
 module.exports = adminRouter;

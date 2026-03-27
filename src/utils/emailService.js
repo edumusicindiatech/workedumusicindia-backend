@@ -35,6 +35,7 @@ const { getLeaveRequestTemplate, getLeaveApprovedTemplate, getLeaveRejectedTempl
 const getMediaUploadFailureTemplate = require('../templates/employeeMediaUploadFailureEmail');
 const getNewMediaEmailTemplate = require('../templates/newMediaEmailTemplate');
 const { getVideoGradedTemplate } = require('../templates/employeeVideoGradedTemplateEmail');
+const { getVideoDeletedTemplate } = require('../templates/getMediaTemplates');
 
 require('dotenv').config();
 
@@ -551,12 +552,27 @@ const sendVideoGradedEmailToEmployee = async (email, employeeName, schoolName, b
         await transporter.sendMail({
             from: `"System Notifications" <${process.env.EMAIL_FROM}>`,
             to: email,
-            subject: `Video Graded: ${schoolName} (${marks}/100)`,
+            subject: `Video Evaluated: ${schoolName} (${marks}/10)`, // Subject updated for /10
             html: getVideoGradedTemplate(employeeName, schoolName, band, marks, remark)
         });
         return true;
     } catch (e) {
         console.error("Video Graded Email Error:", e);
+        return false;
+    }
+};
+
+const sendVideoDeletedEmailToEmployee = async (email, employeeName, schoolName, band) => {
+    try {
+        await transporter.sendMail({
+            from: `"System Alerts" <${process.env.EMAIL_FROM}>`,
+            to: email,
+            subject: `Vault Alert: Media Removed (${schoolName})`,
+            html: getVideoDeletedTemplate(employeeName, schoolName, band)
+        });
+        return true;
+    } catch (e) {
+        console.error("Video Deleted Email Error:", e);
         return false;
     }
 };
@@ -600,5 +616,6 @@ module.exports = {
     sendLeaveRevokedEmailToAdmin,
     sendMediaUploadFailureEmailToEmployee,
     sendNewMediaEmailToAdmin,
-    sendVideoGradedEmailToEmployee
+    sendVideoGradedEmailToEmployee,
+    sendVideoDeletedEmailToEmployee
 };

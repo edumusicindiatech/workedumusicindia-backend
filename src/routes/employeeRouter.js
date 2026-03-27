@@ -957,9 +957,8 @@ employeeRouter.delete('/leave-request/:id', userAuth, async (req, res) => {
     }
 });
 
-
 // ==========================================
-// 20. GENERATE PRE-SIGNED URLS ROUTE
+// 20. GENERATE PRE-SIGNED URLS
 // ==========================================
 employeeRouter.post("/media/generate-urls", userAuth, async (req, res) => {
     try {
@@ -1016,8 +1015,9 @@ employeeRouter.post("/media/generate-urls", userAuth, async (req, res) => {
         res.status(500).json({ success: false, message: "Failed to generate upload URLs." });
     }
 });
+
 // ==========================================
-// 2. SAVE MEDIA LOG TO MONGODB ROUTE
+// 21. SAVE MEDIA LOG TO MONGODB
 // ==========================================
 employeeRouter.post("/media/save-log", userAuth, async (req, res) => {
     try {
@@ -1088,6 +1088,9 @@ employeeRouter.post("/media/save-log", userAuth, async (req, res) => {
     }
 });
 
+// ==========================================
+// 22. SEND MEDIA UPLOAD FAILURE EMAIL
+// ==========================================
 employeeRouter.post('/media/send-failure-email', userAuth, async (req, res) => {
     try {
         const { failedFiles, eventContext, schoolId } = req.body;
@@ -1142,6 +1145,9 @@ employeeRouter.post('/media/send-failure-email', userAuth, async (req, res) => {
     }
 });
 
+// ==========================================
+// 23. GET MEDIA GALLERY
+// ==========================================
 employeeRouter.get("/media", userAuth, async (req, res) => {
     try {
         // Default to current year if none provided
@@ -1166,6 +1172,9 @@ employeeRouter.get("/media", userAuth, async (req, res) => {
     }
 });
 
+// ==========================================
+// 24. GENERATE DOWNLOAD URL
+// ==========================================
 employeeRouter.post("/media/generate-download-url", userAuth, async (req, res) => {
     try {
         const { fileUrl, fileName } = req.body;
@@ -1198,7 +1207,7 @@ employeeRouter.post("/media/generate-download-url", userAuth, async (req, res) =
 });
 
 // ==========================================
-// DELETE SPECIFIC VIDEO FILE
+// 25. DELETE SPECIFIC VIDEO FILE
 // ==========================================
 employeeRouter.delete("/media/file/:fileId", userAuth, async (req, res) => {
     try {
@@ -1256,9 +1265,8 @@ employeeRouter.delete("/media/file/:fileId", userAuth, async (req, res) => {
     }
 });
 
-
 // ==========================================
-// 1. INITIATE MULTIPART UPLOAD
+// 26. INITIATE MULTIPART UPLOAD
 // ==========================================
 employeeRouter.post('/media/multipart/create', userAuth, async (req, res) => {
     try {
@@ -1294,7 +1302,7 @@ employeeRouter.post('/media/multipart/create', userAuth, async (req, res) => {
 });
 
 // ==========================================
-// 2. SIGN INDIVIDUAL CHUNKS
+// 27. SIGN INDIVIDUAL CHUNKS
 // ==========================================
 employeeRouter.post('/media/multipart/sign', userAuth, async (req, res) => {
     try {
@@ -1317,7 +1325,7 @@ employeeRouter.post('/media/multipart/sign', userAuth, async (req, res) => {
 });
 
 // ==========================================
-// 3. COMPLETE AND STITCH VIDEO
+// 28. COMPLETE AND STITCH VIDEO
 // ==========================================
 employeeRouter.post('/media/multipart/complete', userAuth, async (req, res) => {
     try {
@@ -1346,7 +1354,7 @@ employeeRouter.post('/media/multipart/complete', userAuth, async (req, res) => {
 });
 
 // ==========================================
-// 4. ABORT ON CANCELLATION
+// 29. ABORT ON CANCELLATION
 // ==========================================
 employeeRouter.post('/media/multipart/abort', userAuth, async (req, res) => {
     try {
