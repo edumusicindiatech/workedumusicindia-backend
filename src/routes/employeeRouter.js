@@ -199,7 +199,7 @@ employeeRouter.post('/check-in', userAuth, async (req, res) => {
             }
         });
 
-        if (!school) return res.status(403).json({ success: false, message: "Check-in failed. You are not within 100 meters of the school." });
+        if (!school) return res.status(403).json({ success: false, message: "Check-in failed. You are far from alloted location." });
 
         let status = 'Present';
         if (lateReason) status = 'Late';
@@ -255,7 +255,7 @@ employeeRouter.post('/check-out', userAuth, async (req, res) => {
             }
         });
 
-        if (!school) return res.status(403).json({ success: false, message: "You must be within 100 meters to check out." });
+        if (!school) return res.status(403).json({ success: false, message: "You must be nearby alloted location for the check out." });
 
         const todayString = new Date().toISOString().split('T')[0];
         const record = await Attendance.findOne({ teacher: employee._id, school: schoolId, band, date: todayString, checkOutTime: null });
@@ -291,31 +291,83 @@ employeeRouter.post('/check-out', userAuth, async (req, res) => {
 // ==========================================
 // 6. MARK STATUS (Absent / Holiday)
 // ==========================================
-employeeRouter.post('/mark-status', userAuth, async (req, res) => {
+employeeRouter.post('/mark-day-status', userAuth, async (req, res) => {
     try {
-        const { schoolId, band, status, reason } = req.body;
-        const employee = await User.findById(req.user._id);
-        const school = await School.findById(schoolId);
+        const { status, reason } = req.body;
+        const employeeId = req.user._id;
 
-        await Attendance.create({
-            teacher: employee._id, school: schoolId, band,
-            date: new Date().toISOString().split('T')[0],
-            status: status, teacherNote: reason || "Marked from Dashboard"
+        // --- NEW: Require reason for Absent or Holiday ---
+        if (['absent', 'holiday'].includes(status.toLowerCase()) && (!reason || reason.trim() === '')) {
+            return res.status(400).json({
+                success: false,
+                message: "A reason is mandatory when marking Absent or Holiday."
+            });
+        }
+
+        // Populate the assignments so we can grab the school details
+        const employee = await User.findById(employeeId).populate('assignments.school');
+
+        // Mirroring your exact working date logic
+        const dateString = new Date().toISOString().split('T')[0];
+        const todayDayOfWeek = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date().getDay()];
+
+        // 1. Get today's assignments
+        const todaysAssignments = employee.assignments.filter(a => a?.allowedDays?.includes(todayDayOfWeek));
+
+        // 2. Find shifts that already have an attendance record so we skip them
+        const existingRecords = await Attendance.find({ teacher: employeeId, date: dateString });
+        const existingKeys = existingRecords.map(r => `${r?.school?.toString()}-${r?.band}`);
+
+        const recordsToCreate = [];
+
+        // 3. Prepare the exact same object structure as your working /mark-status route
+        todaysAssignments.forEach(a => {
+            if (!existingKeys.includes(`${a?.school?._id}-${a?.category}`)) {
+                recordsToCreate.push({
+                    teacher: employeeId,
+                    school: a?.school?._id,
+                    band: a?.category,
+                    date: dateString,
+                    status: status,
+                    teacherNote: reason || "Marked from Dashboard" // Exact match to your working code
+                });
+            }
         });
 
-        // Notify Admins
-        const admins = await notifyAdminsInApp(req, `${status} Alert: ${employee.name}`, `${employee.name} marked ${status} for ${school.schoolName}`, "Warning");
+        // 4. Create them all at once using insertMany (the bulk equivalent of .create)
+        if (recordsToCreate.length > 0) {
+            await Attendance.insertMany(recordsToCreate);
 
-        for (const admin of admins) {
-            if (await canSendEmailToUser(admin)) {
-                await sendAdminStatusAlert(
-                    admin.email, admin.name, employee.name, school.schoolName, band, status, reason
-                );
+            // --- REAL-TIME SOCKET UPDATES START ---
+            const io = req.io;
+            if (io) {
+                // Instantly refresh the employee's dashboard
+                io.to(employeeId.toString()).emit("employee_schedule_refresh", {
+                    type: "SCHEDULE_UPDATE",
+                    message: `All remaining shifts marked as ${status}.`
+                });
+                io.emit('operations_update', { type: 'refresh_feed' });
+            }
+            // --- REAL-TIME SOCKET UPDATES END ---
+
+            // Notify Admins (Exact same logic as your working route)
+            const admins = await notifyAdminsInApp(req, `${status} Alert: ${employee.name}`, `${employee.name} marked full day ${status} for remaining schools`, "Warning");
+
+            if (Array.isArray(admins)) {
+                for (const admin of admins) {
+                    // DELETED THE MANUAL "io.to(admin._id).emit" BLOCK HERE
+
+                    // ONLY keep the email alert logic in this loop
+                    if (await canSendEmailToUser(admin)) {
+                        await sendAdminStatusAlert(admin.email, admin.name, employee.name, "All Remaining Schools", "N/A", status, reason);
+                    }
+                }
             }
         }
 
-        res.status(200).json({ success: true, message: `Marked as ${status}.` });
+        res.status(200).json({ success: true, message: `All remaining shifts marked as ${status}.` });
     } catch (error) {
+        console.error("Error in /mark-day-status:", error);
         res.status(500).json({ success: false, message: "Server error." });
     }
 });
@@ -503,13 +555,15 @@ employeeRouter.get('/assigned-schools', userAuth, async (req, res) => {
             // Filter attendance strictly for this specific school + category
             const catAttendances = attendances.filter(a => a.school?.toString() === schoolId && a.band === assignment.category);
 
-            let stats = { present: 0, late: 0, absent: 0, events: 0 };
+            let stats = { present: 0, late: 0, absent: 0, events: 0, leaves: 0 };
+
             let history = catAttendances.map(a => {
                 let statusUpper = (a.status || 'Unknown').toUpperCase();
                 if (statusUpper === 'PRESENT') stats.present++;
                 if (statusUpper === 'LATE') stats.late++;
                 if (statusUpper === 'ABSENT') stats.absent++;
                 if (statusUpper === 'EVENT') stats.events++;
+                if (statusUpper === 'LEAVE' || statusUpper === 'HOLIDAY') stats.leaves++;
 
                 const d = new Date(a.date);
                 const formattedDate = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
