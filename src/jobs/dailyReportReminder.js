@@ -22,7 +22,7 @@ const startDailyReportsCron = (io) => {
 
             // 1. Fetch all employees and populate their assigned schools
             const employees = await User.find({ role: 'Employee' }).populate('assignments.school');
-            const admins = await User.find({ role: { $in: ['Admin', 'SuperAdmin'] } });
+            const admins = await User.find({ role: { $in: ['Admin'] } });
 
             for (const employee of employees) {
                 if (!employee.assignments || employee.assignments.length === 0) continue;
