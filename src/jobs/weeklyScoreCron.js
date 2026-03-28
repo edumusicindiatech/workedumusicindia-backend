@@ -5,7 +5,6 @@ const MediaLog = require('../models/MediaLog');
 const LeaveRequest = require('../models/LeaveRequest');
 const Warning = require('../models/Warning');
 const WeeklyProgress = require('../models/WeeklyProgress');
-const getWeeklyScoreEmailTemplate = require('../templates/employeeWeeklyScoreEmail');
 const Notification = require('../models/Notification');
 const { sendWeeklyScoreToEmployee, sendTopPerformersToAdmin } = require('../utils/emailService');
 const { canSendEmailToUser } = require('../utils/canSendEmailToUser');
@@ -104,7 +103,6 @@ const startWeeklyScoreCron = (io) => {
 
             // 2. Calculate scores for everyone
             for (const emp of employees) {
-                // Fetch this week's data
                 const attendance = await Attendance.find({ teacher: emp._id, date: { $gte: startDateStr, $lte: endDateStr } });
                 const mediaLogs = await MediaLog.find({ teacher: emp._id, createdAt: { $gte: lastSaturday, $lte: today } });
                 const warnings = await Warning.find({ teacher: emp._id, dateIssued: { $gte: lastSaturday, $lte: today } });
@@ -143,14 +141,14 @@ const startWeeklyScoreCron = (io) => {
                         teacher: data.employee._id,
                         weekStartDate: lastSaturday,
                         weekEndDate: today
-                    }, // The search criteria (Find this exact week for this teacher)
+                    },
                     {
                         score: data.score,
                         rank: rank,
                         colorZone: data.colorZone,
                         stats: data.stats
-                    }, // The data to update
-                    { upsert: true, new: true } // If it doesn't exist, create it!
+                    },
+                    { upsert: true, new: true }
                 );
 
                 // Update User Profile
@@ -170,21 +168,22 @@ const startWeeklyScoreCron = (io) => {
                     level: data.colorZone === 'red' ? 'Warning' : 'Info'
                 });
 
-                // Trigger Real-Time Socket Event
-                io.to(data.employee._id.toString()).emit('weekly_score_updated', {
-                    score: data.score, rank, colorZone: data.colorZone, scoreTrend: data.scoreTrend
-                });
 
-                const shouldSendToEmployee = await canSendEmailToUser(data.employee);
-
-                if (shouldSendToEmployee) {
-                    // Send Email via Service ONLY if allowed
-                    await sendWeeklyScoreToEmployee(
-                        data.employee.email, data.employee.name, data.score, rank,
-                        data.colorZone, data.scoreTrend, data.stats
-                    );
+                // 🔥 FIX: Wrapped email in try/catch to prevent a single email crash from breaking the loop
+                try {
+                    const shouldSendToEmployee = await canSendEmailToUser(data.employee);
+                    if (shouldSendToEmployee) {
+                        await sendWeeklyScoreToEmployee(
+                            data.employee.email, data.employee.name, data.score, rank,
+                            data.colorZone, data.scoreTrend, data.stats
+                        );
+                    }
+                } catch (emailError) {
+                    console.error(`Failed to send email to ${data.employee.email}:`, emailError);
                 }
             }
+
+            io.emit('leaderboard_refresh');
 
             // 5. Notify Admins about the Top 3
             if (top3Rankers.length > 0) {
@@ -200,18 +199,18 @@ const startWeeklyScoreCron = (io) => {
                         level: 'Info'
                     });
 
-                    // Trigger Real-Time Dashboard refresh for Admin
-                    io.to(admin._id.toString()).emit('admin_leaderboard_refresh');
-
-                    const shouldSendToAdmin = await canSendEmailToUser(admin);
-
-                    if (shouldSendToAdmin) {
-                        // Send Email via Service ONLY if allowed
-                        await sendTopPerformersToAdmin(admin.email, admin.name, top3Rankers);
+                    // 🔥 FIX: Wrapped Admin email in try/catch as well
+                    try {
+                        const shouldSendToAdmin = await canSendEmailToUser(admin);
+                        if (shouldSendToAdmin) {
+                            await sendTopPerformersToAdmin(admin.email, admin.name, top3Rankers);
+                        }
+                    } catch (adminEmailError) {
+                        console.error(`Failed to send email to Admin ${admin.email}:`, adminEmailError);
                     }
                 }
             }
-
+            io.emit('admin_leaderboard_refresh');
             console.log("✅ Weekly Leaderboard successfully generated and notifications sent!");
 
         } catch (error) {
@@ -223,4 +222,4 @@ const startWeeklyScoreCron = (io) => {
     });
 };
 
-module.exports = startWeeklyScoreCron;
+module.exports = startWeeklyScoreCron; 

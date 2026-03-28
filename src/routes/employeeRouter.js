@@ -16,6 +16,7 @@ const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const s3Client = require("../config/s3");
 const MediaLog = require("../models/MediaLog");
 const { GetObjectCommand } = require('@aws-sdk/client-s3')
+const WeeklyProgress = require('../models/WeeklyProgress');
 
 // Import all specific email templates
 const {
@@ -1416,6 +1417,86 @@ employeeRouter.get('/leaderboard', userAuth, async (req, res) => {
     } catch (error) {
         console.error("Leaderboard Fetch Error:", error);
         res.status(500).json({ success: false, message: "Error fetching leaderboard data" });
+    }
+});
+
+// ============================================================================
+// 31. MY PERSONAL GRAPH DATA
+// ============================================================================
+employeeRouter.get('/my-graph', userAuth, async (req, res) => {
+    try {
+        const employeeId = req.user._id; // Gets the ID from your userAuth middleware
+        const { period, date } = req.query;
+
+        let graphData = [];
+
+        if (period === 'weekly') {
+            // 'date' comes in as 'YYYY-MM' (e.g., '2026-03')
+            const [year, month] = date.split('-');
+
+            // Define the start and end of that specific month
+            const startDate = new Date(year, month - 1, 1);
+            const endDate = new Date(year, month, 0, 23, 59, 59);
+
+            // Fetch all weekly records for this employee within this month
+            const records = await WeeklyProgress.find({
+                teacher: employeeId,
+                weekStartDate: { $gte: startDate, $lte: endDate }
+            }).sort({ weekStartDate: 1 });
+
+            // Format for the frontend chart
+            graphData = records.map(record => {
+                const startStr = new Date(record.weekStartDate).toLocaleDateString('en-US', { month: 'short', day: '2-digit' });
+                const endStr = new Date(record.weekEndDate).toLocaleDateString('en-US', { month: 'short', day: '2-digit' });
+
+                return {
+                    label: `${startStr} - ${endStr}`,
+                    score: record.score
+                };
+            });
+
+        } else if (period === 'monthly') {
+            // 'date' comes in as 'YYYY' (e.g., '2026')
+            const year = parseInt(date);
+            const startDate = new Date(year, 0, 1);
+            const endDate = new Date(year, 11, 31, 23, 59, 59);
+
+            // Fetch ALL records for the whole year
+            const records = await WeeklyProgress.find({
+                teacher: employeeId,
+                weekStartDate: { $gte: startDate, $lte: endDate }
+            }).sort({ weekStartDate: 1 });
+
+            // Group them by month to calculate the average score per month
+            const monthlyData = {};
+            records.forEach(record => {
+                const monthName = new Date(record.weekStartDate).toLocaleString('en-US', { month: 'short' }); // "Jan", "Feb"
+
+                if (!monthlyData[monthName]) {
+                    monthlyData[monthName] = { totalScore: 0, count: 0 };
+                }
+                monthlyData[monthName].totalScore += record.score;
+                monthlyData[monthName].count += 1;
+            });
+
+            // Format into an array in correct month order
+            const monthOrder = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+            monthOrder.forEach(month => {
+                if (monthlyData[month]) {
+                    graphData.push({
+                        label: month,
+                        score: Math.round(monthlyData[month].totalScore / monthlyData[month].count)
+                    });
+                }
+            });
+        }
+
+        res.json({ success: true, data: graphData });
+
+    } catch (error) {
+        console.error("Employee Graph Error:", error);
+        res.status(500).json({ success: false, message: "Error fetching graph data" });
     }
 });
 
