@@ -1737,12 +1737,68 @@ adminRouter.get('/leave-requests', userAuth, adminAuth, async (req, res) => {
 // ==========================================
 adminRouter.get('/employees', userAuth, adminAuth, async (req, res) => {
     try {
+        // 1. Your original query (Kept exactly as you wrote it)
         const employees = await User.find({ role: 'Employee' })
             .select('-password')
-            .populate('assignments.school', 'schoolName address location')
-            .sort({ name: 1 });
+            .populate('assignments.school', 'schoolName address location');
 
-        res.status(200).json({ success: true, data: employees });
+        // Calculate date ranges for "Last Month"
+        const today = new Date();
+        const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1); // 1st of this month
+        const endOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0, 23, 59, 59, 999);
+
+        // 2. Loop through employees to calculate Media Stats
+        const statsPromises = employees.map(async (emp) => {
+            const allMediaLogs = await MediaLog.find({ teacher: emp._id });
+
+            let pendingCount = 0;
+            let lastMonthTotalMarks = 0;
+            let lastMonthGradedCount = 0;
+
+            allMediaLogs.forEach(log => {
+                const logDate = new Date(log.eventDate || log.createdAt);
+
+                // Change this to use the current month variables
+                const isThisMonth = logDate >= startOfMonth && logDate <= endOfMonth;
+
+                log.files.forEach(file => {
+                    if (file.marks === null || file.marks === undefined) {
+                        pendingCount++;
+                    }
+
+                    // Change it to check isThisMonth
+                    if (isThisMonth && file.marks !== null && file.marks !== undefined) {
+                        lastMonthTotalMarks += file.marks;
+                        lastMonthGradedCount++;
+                    }
+                });
+            });
+
+            const lastMonthAvg = lastMonthGradedCount > 0
+                ? (lastMonthTotalMarks / lastMonthGradedCount).toFixed(1)
+                : null;
+
+            // Merge your original employee data with the new stats
+            return {
+                ...emp.toObject(),
+                pendingCount,
+                lastMonthAvg
+            };
+        });
+
+        const formattedEmployees = await Promise.all(statsPromises);
+
+        // 3. Sort Logic
+        // We sort by Pending Count first (so admins see who needs grading at the top),
+        // and then fallback to your original Alphabetical sort (name: 1)
+        formattedEmployees.sort((a, b) => {
+            if (b.pendingCount !== a.pendingCount) {
+                return b.pendingCount - a.pendingCount; // Highest pending first
+            }
+            return a.name.localeCompare(b.name); // Then alphabetical
+        });
+
+        res.status(200).json({ success: true, data: formattedEmployees });
     } catch (error) {
         console.error("Fetch Employees Error:", error);
         res.status(500).json({ success: false, message: "Server error fetching employees." });

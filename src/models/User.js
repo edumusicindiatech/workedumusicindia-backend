@@ -23,7 +23,7 @@ const userSchema = new mongoose.Schema({
     mobile: { type: String },
     role: { type: String, enum: ['SuperAdmin', 'Admin', 'Employee'], default: 'Employee' },
     designation: { type: String, default: 'Teacher' },
-    zone: { type: String}, // e.g., "Zone A", "Sultanpur" - Used for Broadcast targeting
+    zone: { type: String },
 
     assignments: [assignmentSchema], // Embedded array for their specific schedules
 
@@ -32,6 +32,25 @@ const userSchema = new mongoose.Schema({
         systemLanguage: { type: String, default: 'English' },
         adminNotifications: { type: Boolean, default: true },
         employeeNotifications: { type: Boolean, default: true }
+    },
+    
+    currentWeeklyScore: {
+        type: Number,
+        default: 0
+    },
+    currentWeeklyRank: {
+        type: Number,
+        default: 0
+    },
+    scoreTrend: {
+        type: String,
+        enum: ['up', 'down', 'flat'],
+        default: 'flat' // 'up' = 📈, 'down' = 📉
+    },
+    colorZone: {
+        type: String,
+        enum: ['red', 'blue', 'green'],
+        default: 'red' // <50: red, 50-69: blue, 70+: green
     },
 
     isActive: { type: Boolean, default: true }

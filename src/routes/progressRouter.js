@@ -7,69 +7,42 @@ const DailyReport = require('../models/DailyReports');
 const LeaveRequest = require('../models/LeaveRequest'); // <-- NEW IMPORT
 const userAuth = require('../middleware/userAuth');
 const adminAuth = require('../middleware/adminAuth');
-const excelJS = require('exceljs');
+const exceljs = require('exceljs');
+const WeeklyProgress = require('../models/WeeklyProgress');
 
 // ============================================================================
-// 1. GET ALL EMPLOYEES WITH WEEKLY PROGRESS SCORE
+// 1. GET ALL EMPLOYEES (Now using stored scores from the User model)
 // ============================================================================
 progressRouter.get('/employees', userAuth, adminAuth, async (req, res) => {
     try {
-        const employees = await User.find({ role: 'Employee', isActive: true }).select('name zone');
+        // We no longer calculate on the fly. 
+        // We just fetch the pre-calculated scores saved by our Saturday Cron Job.
+        const employees = await User.find({ role: 'Employee', isActive: true })
+            .select('name zone currentWeeklyScore currentWeeklyRank scoreTrend colorZone');
 
-        const today = new Date();
-        const dayOfWeek = today.getDay();
-        const diffToMonday = today.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1);
+        // Format the data to match what your Frontend "ProgressReport" component expects
+        const progressData = employees.map(emp => ({
+            _id: emp._id,
+            name: emp.name,
+            zone: emp.zone,
+            score: emp.currentWeeklyScore, // This is the 25 or 15 you saw in the leaderboard
+            currentWeeklyScore: emp.currentWeeklyScore,
+            currentWeeklyRank: emp.currentWeeklyRank,
+            scoreTrend: emp.scoreTrend,
+            colorZone: emp.colorZone
+        }));
 
-        const startOfWeek = new Date(today.setDate(diffToMonday));
-        startOfWeek.setHours(0, 0, 0, 0);
+        // Sort them by rank (Rank 1 at the top)
+        progressData.sort((a, b) => a.currentWeeklyRank - b.currentWeeklyRank);
 
-        const dateFormatter = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' });
-        const dateString = dateFormatter.format(startOfWeek);
-
-        const statsPromises = employees.map(async (emp) => {
-            const attendanceRecords = await Attendance.find({
-                teacher: emp._id,
-                date: { $gte: dateString }
-            });
-
-            const mediaLogs = await MediaLog.find({
-                teacher: emp._id,
-                createdAt: { $gte: startOfWeek }
-            });
-
-            let attendanceScore = 100;
-            if (attendanceRecords.length > 0) {
-                const positiveRecords = attendanceRecords.filter(r => ['Present', 'Event', 'Late'].includes(r.status)).length;
-                attendanceScore = (positiveRecords / attendanceRecords.length) * 100;
-            }
-
-            let mediaFilesCount = 0;
-            mediaLogs.forEach(log => mediaFilesCount += log.files.length);
-
-            const targetMedia = 4;
-            const mediaScore = (Math.min(mediaFilesCount, targetMedia) / targetMedia) * 100;
-
-            const finalScore = Math.round((attendanceScore * 0.5) + (mediaScore * 0.5));
-
-            return {
-                _id: emp._id,
-                name: emp.name,
-                zone: emp.zone,
-                score: finalScore,
-                details: {
-                    attendancePercentage: Math.round(attendanceScore),
-                    mediaUploadedThisWeek: mediaFilesCount,
-                    targetMedia: targetMedia
-                }
-            };
+        res.json({
+            success: true,
+            data: progressData
         });
 
-        const progressData = await Promise.all(statsPromises);
-        progressData.sort((a, b) => b.score - a.score);
-        res.json({ success: true, data: progressData });
     } catch (error) {
-        console.error("Progress Calculation Error:", error);
-        res.status(500).json({ success: false, message: error.message });
+        console.error("Progress Fetch Error:", error);
+        res.status(500).json({ success: false, message: "Error fetching employee progress data" });
     }
 });
 
@@ -128,162 +101,170 @@ progressRouter.get('/:teacherId/records', userAuth, adminAuth, async (req, res) 
 });
 
 // ============================================================================
-// 3. EXPORT EXCEL (WITH LEAVES & SUMMARY)
+// 3. EXPORT EXCEL (WITH HIGH-CONTRAST COLORED SUMMARY & LEAVES)
 // ============================================================================
 progressRouter.get('/:teacherId/export/:month', userAuth, adminAuth, async (req, res) => {
     try {
-        const { teacherId, month } = req.params; // "YYYY-MM"
-
+        const { teacherId, month } = req.params;
         const teacher = await User.findById(teacherId);
-        if (!teacher) return res.status(404).send("Teacher not found");
 
-        // 1. Fetch Attendance
+        if (!teacher) return res.status(404).json({ success: false, message: 'Teacher not found' });
+
+        // 1. Fetch regular attendance records
         const records = await Attendance.find({
             teacher: teacherId,
             date: { $regex: `^${month}` }
-        }).populate('school', 'schoolName').sort({ date: 1 }).lean();
+        }).populate('school', 'schoolName').sort({ date: 1 });
 
-        const mediaLogs = await Media.find({ teacher: teacherId }).lean();
-        const dailyReports = await DailyReport.find({
-            teacher: teacherId,
-            date: { $regex: `^${month}` }
-        }).lean();
-
-        // 2. Fetch Leaves overlapping with this month
-        const monthStart = new Date(`${month}-01T00:00:00Z`);
+        // 2. BULLETPROOF LEAVE FETCHING (Checks overlap and strict lowercase 'approved')
+        const monthStart = new Date(`${month}-01T00:00:00.000Z`);
         const nextMonth = new Date(monthStart);
         nextMonth.setMonth(nextMonth.getMonth() + 1);
 
         const leaves = await LeaveRequest.find({
-            employee: teacherId,
-            status: 'approved',
-            $or: [
-                { fromDate: { $gte: monthStart, $lt: nextMonth } },
-                { toDate: { $gte: monthStart, $lt: nextMonth } },
-                { fromDate: { $lt: monthStart }, toDate: { $gte: nextMonth } }
+            $or: [{ teacher: teacherId }, { employee: teacherId }], // Catch either field name
+            status: 'approved', // MUST BE LOWERCASE based on your schema enum!
+            $and: [
+                { fromDate: { $lt: nextMonth } }, // Started before the end of the month
+                { toDate: { $gte: monthStart } }  // Ended after the start of the month
             ]
-        }).sort({ fromDate: 1 }).lean();
+        }).sort({ fromDate: 1 });
 
-        // 3. Initialize Workbook and Tracking Stats
-        const workbook = new excelJS.Workbook();
-        const worksheet = workbook.addWorksheet(`${teacher.name} - ${month}`);
-
-        let stats = { present: 0, absent: 0, late: 0, event: 0, holiday: 0, leaveDays: 0, mediaSent: 0 };
+        // 3. Setup Workbook
+        const workbook = new exceljs.Workbook();
+        const worksheet = workbook.addWorksheet(`${month} Report`);
 
         worksheet.columns = [
-            { header: 'Date', key: 'date', width: 25 }, // Widened for date ranges
-            { header: 'School / Category', key: 'school', width: 30 },
-            { header: 'Band', key: 'category', width: 15 },
-            { header: 'Status', key: 'status', width: 18 },
-            { header: 'Check-In', key: 'checkIn', width: 15 },
-            { header: 'Check-Out', key: 'checkOut', width: 15 },
-            { header: 'Media Files', key: 'mediaCount', width: 15 },
-            { header: 'Notes / Reason', key: 'note', width: 40 },
-            { header: 'Daily Report / Admin Note', key: 'report', width: 50 }
+            { header: 'Date', key: 'date', width: 22 },
+            { header: 'School', key: 'school', width: 30 },
+            { header: 'Category (Band)', key: 'band', width: 22 },
+            { header: 'Status', key: 'status', width: 15 },
+            { header: 'Check In', key: 'checkIn', width: 15 },
+            { header: 'Check Out', key: 'checkOut', width: 15 },
+            { header: 'Media Files', key: 'media', width: 15 },
+            { header: 'Notes/Reason', key: 'notes', width: 45 }
         ];
 
-        // Style Headers
-        const headerColors = ["2563EB", "0D9488", "4F46E5", "7C3AED", "DB2777", "D97706", "059669", "DC2626", "475569"];
-        worksheet.getRow(1).eachCell((cell, colNumber) => {
-            cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
-            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: `FF${headerColors[(colNumber - 1) % headerColors.length]}` } };
-            cell.alignment = { horizontal: "center", vertical: "center" };
-        });
+        // Format Top Header Row (Dark Slate & White Text)
+        worksheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+        worksheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0F172A' } };
+        worksheet.getRow(1).alignment = { horizontal: 'center' };
 
-        // 4. Process Attendance Rows
+        const categorizedStats = {};
+
+        // 4. Process Standard Attendance Rows
         records.forEach(record => {
-            if (record.status === 'Present') stats.present++;
-            if (record.status === 'Late') stats.late++;
-            if (record.status === 'Absent') stats.absent++;
-            if (record.status === 'Event') stats.event++;
-            if (record.status === 'Holiday') stats.holiday++;
+            const schoolName = record.school?.schoolName || 'Unassigned';
+            const bandName = record.band || 'General';
 
-            const matchingMedia = mediaLogs.filter(m =>
-                m.eventDate && m.eventDate.toISOString().split('T')[0] === record.date &&
-                m.school.toString() === record.school._id.toString() &&
-                m.band === record.band
-            );
-            const mediaFilesCount = matchingMedia.reduce((sum, m) => sum + m.files.length, 0);
-            stats.mediaSent += mediaFilesCount;
-
-            const reportForDay = dailyReports.find(report => report.date === record.date);
-            let formattedReportString = record.dailyReport || '-';
-            if (reportForDay) {
-                formattedReportString = `[${reportForDay.category.toUpperCase()}]\nSummary: ${reportForDay.summary}`;
-                if (reportForDay.eventName) formattedReportString += `\nEvent: ${reportForDay.eventName}`;
+            if (!categorizedStats[schoolName]) categorizedStats[schoolName] = {};
+            if (!categorizedStats[schoolName][bandName]) {
+                categorizedStats[schoolName][bandName] = {
+                    Present: 0, Absent: 0, Late: 0, Event: 0, Holiday: 0, Media: 0
+                };
             }
 
-            const row = worksheet.addRow({
-                date: record.date,
-                school: record.school?.schoolName || 'Unknown',
-                category: record.band,
-                status: record.status.toUpperCase(),
-                checkIn: record.checkInTime ? new Date(record.checkInTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-',
-                checkOut: record.checkOutTime ? new Date(record.checkOutTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-',
-                mediaCount: mediaFilesCount,
-                note: record.teacherNote || record.lateReason || record.eventNote || record.overtimeReason || '-',
-                report: formattedReportString
+            const status = record.status;
+            if (categorizedStats[schoolName][bandName][status] !== undefined) {
+                categorizedStats[schoolName][bandName][status]++;
+            }
+            categorizedStats[schoolName][bandName].Media += (record.mediaFilesCount || 0);
+
+            worksheet.addRow({
+                date: new Date(record.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+                school: schoolName,
+                band: bandName,
+                status: record.status,
+                checkIn: record.checkInTime ? new Date(record.checkInTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--',
+                checkOut: record.checkOutTime ? new Date(record.checkOutTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--',
+                media: record.mediaFilesCount || 0,
+                notes: record.teacherNote || record.lateReason || ''
             });
-            row.getCell('note').alignment = { wrapText: true, vertical: 'top' };
-            row.getCell('report').alignment = { wrapText: true, vertical: 'top' };
         });
 
-        // 5. Process Leave Rows (Adds as range, counts actual days in month)
+        // 5. Process Leave Rows into the Main Table
         leaves.forEach(leave => {
-            // Calculate days for the stats summary (only counting days that fell IN this month)
-            const leaveStart = new Date(leave.fromDate);
-            const leaveEnd = new Date(leave.toDate);
-            const calcStart = leaveStart < monthStart ? monthStart : leaveStart;
-            const calcEnd = leaveEnd >= nextMonth ? new Date(nextMonth.getTime() - 1) : leaveEnd;
-            const daysInMonth = Math.round((calcEnd - calcStart) / (1000 * 60 * 60 * 24)) + 1;
-            stats.leaveDays += daysInMonth;
+            const from = new Date(leave.fromDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+            const to = new Date(leave.toDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+            const dateStr = leave.fromDate === leave.toDate ? from : `${from} to ${to}`;
 
-            // Add row
-            const fromStr = leaveStart.toISOString().split('T')[0];
-            const toStr = leaveEnd.toISOString().split('T')[0];
-
-            const row = worksheet.addRow({
-                date: fromStr === toStr ? fromStr : `${fromStr} to ${toStr}`,
-                school: 'GENERAL LEAVE',
-                category: '-',
-                status: 'ON LEAVE',
-                checkIn: '-',
-                checkOut: '-',
-                mediaCount: '-',
-                note: `Reason: ${leave.reason}`,
-                report: `Admin Note: ${leave.adminRemarks || 'N/A'}`
+            worksheet.addRow({
+                date: dateStr,
+                school: '🌴 GENERAL LEAVE',
+                band: '--',
+                status: 'Approved',
+                checkIn: '--',
+                checkOut: '--',
+                media: '--',
+                notes: `Reason: ${leave.reason} ${leave.adminRemarks ? `(Admin: ${leave.adminRemarks})` : ''}`
             });
-
-            // Style Leave rows specifically
-            row.eachCell((cell) => {
-                cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEFF6FF' } }; // Light blue
-            });
-            row.getCell('note').alignment = { wrapText: true, vertical: 'top' };
-            row.getCell('report').alignment = { wrapText: true, vertical: 'top' };
         });
 
-        // 6. ADD EXCEL SUMMARY SECTION AT THE BOTTOM
-        worksheet.addRow([]); // Blank row
-        worksheet.addRow([]); // Blank row
+        // ---------------------------------------------------------
+        // HIGH CONTRAST COLORED SUMMARY SECTION
+        // ---------------------------------------------------------
+        worksheet.addRow([]);
+        worksheet.addRow([]);
 
-        const summaryHeader = worksheet.addRow(['MONTHLY SUMMARY', 'COUNT']);
-        summaryHeader.font = { bold: true, size: 12 };
-        summaryHeader.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E293B' } };
-        summaryHeader.getCell(1).color = { argb: 'FFFFFFFF' };
-        summaryHeader.getCell(2).color = { argb: 'FFFFFFFF' };
+        // Main Summary Title Banner (Indigo Background / White Bold Text)
+        const summaryHeaderRow = worksheet.addRow(['📊 ATTENDANCE SUMMARY BY SCHOOL & CATEGORY']);
+        summaryHeaderRow.font = { bold: true, size: 14, color: { argb: 'FFFFFFFF' } };
+        summaryHeaderRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4338CA' } }; // Indigo 700
+        summaryHeaderRow.alignment = { horizontal: 'center', vertical: 'middle' };
+        worksheet.mergeCells(`A${summaryHeaderRow.number}:H${summaryHeaderRow.number}`);
+        worksheet.getRow(summaryHeaderRow.number).height = 30;
 
-        worksheet.addRow(['Total Present Days', stats.present]);
-        worksheet.addRow(['Total Late Days', stats.late]);
-        worksheet.addRow(['Total Absent Days', stats.absent]);
-        worksheet.addRow(['Total Event Days', stats.event]);
-        worksheet.addRow(['Total Holidays', stats.holiday]);
-        worksheet.addRow(['Total Leave Days (Approved)', stats.leaveDays]);
-        worksheet.addRow(['Total Media Files Submitted', stats.mediaSent]);
+        // Loop Schools & Bands
+        for (const school in categorizedStats) {
+            worksheet.addRow([]);
 
-        // Box border for summary
-        for (let i = summaryHeader.number; i <= summaryHeader.number + 7; i++) {
-            worksheet.getRow(i).getCell(1).border = { left: { style: 'thin' }, right: { style: 'thin' }, top: { style: 'thin' }, bottom: { style: 'thin' } };
-            worksheet.getRow(i).getCell(2).border = { left: { style: 'thin' }, right: { style: 'thin' }, top: { style: 'thin' }, bottom: { style: 'thin' } };
+            // School Name Banner (Emerald Green Background / White Bold Text)
+            const schoolRow = worksheet.addRow([`🏫 ${school}`]);
+            schoolRow.font = { bold: true, size: 12, color: { argb: 'FFFFFFFF' } };
+            schoolRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF059669' } }; // Emerald 600
+            worksheet.mergeCells(`A${schoolRow.number}:H${schoolRow.number}`);
+
+            for (const band in categorizedStats[school]) {
+                const stats = categorizedStats[school][band];
+
+                // Band Sub-Header (Bright Yellow Background / Black Bold Text)
+                const bandRow = worksheet.addRow(['', `📌 ${band}`]);
+                bandRow.font = { bold: true, italic: true, color: { argb: 'FF000000' } };
+                bandRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEF08A' } }; // Yellow 200
+                worksheet.mergeCells(`B${bandRow.number}:H${bandRow.number}`);
+
+                worksheet.addRow(['', '', `✅ Present: ${stats.Present}`]);
+                worksheet.addRow(['', '', `⚠️ Late: ${stats.Late}`]);
+                worksheet.addRow(['', '', `❌ Absent: ${stats.Absent}`]);
+                worksheet.addRow(['', '', `🎉 Events/Holidays: ${stats.Event + stats.Holiday}`]);
+                worksheet.addRow(['', '', `📸 Total Media Sent: ${stats.Media}`]);
+            }
+        }
+
+        // ---------------------------------------------------------
+        // LEAVES SUMMARY SECTION (Vibrant Red)
+        // ---------------------------------------------------------
+        if (leaves.length > 0) {
+            worksheet.addRow([]);
+
+            // Leaves Header Banner (Rose/Red Background / White Bold Text)
+            const leaveRow = worksheet.addRow(['🌴 APPROVED LEAVES SUMMARY']);
+            leaveRow.font = { bold: true, size: 12, color: { argb: 'FFFFFFFF' } };
+            leaveRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE11D48' } }; // Rose 600
+            worksheet.mergeCells(`A${leaveRow.number}:H${leaveRow.number}`);
+
+            worksheet.addRow(['', '', `🗓️ Total Approved Requests: ${leaves.length}`]);
+
+            let totalLeaveDays = 0;
+            leaves.forEach(l => {
+                const f = new Date(l.fromDate);
+                const t = new Date(l.toDate);
+                const diffTime = Math.abs(t - f);
+                const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+                totalLeaveDays += diffDays;
+            });
+
+            worksheet.addRow(['', '', `⏳ Total Days on Leave: ${totalLeaveDays}`]);
         }
 
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -293,9 +274,98 @@ progressRouter.get('/:teacherId/export/:month', userAuth, adminAuth, async (req,
         res.end();
 
     } catch (error) {
-        console.error("Excel Export Error:", error);
-        res.status(500).send("Error generating Excel file");
+        console.error("Export Error:", error);
+        res.status(500).json({ success: false, message: 'Failed to generate export file' });
     }
 });
+
+// ============================================================================
+// 4. GET GRAPH DATA (SUPPORTS WEEKLY & MONTHLY AVERAGES)
+// ============================================================================
+progressRouter.get('/:teacherId/graph', userAuth, adminAuth, async (req, res) => {
+    try {
+        const { teacherId } = req.params;
+
+        // The Leaderboard sends 'period' and 'date'. ProgressReport just sends 'month'.
+        const period = req.query.period || 'weekly';
+        const dateTarget = req.query.date || req.query.month;
+
+        if (!dateTarget) {
+            return res.status(400).json({ success: false, message: "Date or month parameter is required" });
+        }
+
+        let formattedData = [];
+
+        if (period === 'weekly') {
+            // Expected dateTarget: "YYYY-MM" (e.g., "2026-03")
+            const monthStart = new Date(`${dateTarget}-01T00:00:00.000Z`);
+            const nextMonth = new Date(monthStart);
+            nextMonth.setMonth(nextMonth.getMonth() + 1);
+
+            // Fetch records where any part of the week touches the target month
+            const weeklyData = await WeeklyProgress.find({
+                teacher: teacherId,
+                $or: [
+                    { weekStartDate: { $gte: monthStart, $lt: nextMonth } },
+                    { weekEndDate: { $gte: monthStart, $lt: nextMonth } }
+                ]
+            }).sort({ weekStartDate: 1 }); // Sort oldest to newest
+
+            formattedData = weeklyData.map(record => {
+                const startDay = new Date(record.weekStartDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                const endDay = new Date(record.weekEndDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
+                return {
+                    label: `${startDay} - ${endDay}`,      // Used by Leaderboard Line Chart
+                    weekLabel: `${startDay} - ${endDay}`,  // Used by Progress Report Bar Chart
+                    score: record.score
+                };
+            });
+
+        } else if (period === 'monthly') {
+            // Expected dateTarget: "YYYY" (e.g., "2026")
+            const yearStart = new Date(`${dateTarget}-01-01T00:00:00.000Z`);
+            const nextYear = new Date(yearStart);
+            nextYear.setFullYear(nextYear.getFullYear() + 1);
+
+            // Fetch ALL weeks in the target year
+            const yearlyData = await WeeklyProgress.find({
+                teacher: teacherId,
+                weekStartDate: { $gte: yearStart, $lt: nextYear }
+            }).sort({ weekStartDate: 1 });
+
+            // Group the weekly scores by their Month, and calculate the average
+            const monthlyStats = {};
+            yearlyData.forEach(record => {
+                const monthName = new Date(record.weekStartDate).toLocaleDateString('en-US', { month: 'short' });
+
+                if (!monthlyStats[monthName]) {
+                    monthlyStats[monthName] = { totalScore: 0, count: 0 };
+                }
+                monthlyStats[monthName].totalScore += record.score;
+                monthlyStats[monthName].count += 1;
+            });
+
+            // Ensure chronological order for the Line Chart (Jan to Dec)
+            const monthsOrder = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+            monthsOrder.forEach(month => {
+                if (monthlyStats[month]) {
+                    formattedData.push({
+                        label: month, // e.g., "Jan", "Feb"
+                        // Calculate the average score for that month
+                        score: Math.round(monthlyStats[month].totalScore / monthlyStats[month].count)
+                    });
+                }
+            });
+        }
+
+        res.status(200).json({ success: true, data: formattedData });
+    } catch (error) {
+        console.error("Graph Data Fetch Error:", error);
+        res.status(500).json({ success: false, message: "Failed to fetch graph data" });
+    }
+});
+
 
 module.exports = progressRouter;

@@ -17,6 +17,7 @@ const startDailyReportsCron = require('../jobs/dailyReportReminder');
 const startAutoAbsentCron = require('../jobs/autoAbsentCron');
 const startCheckoutReminderCron = require('../jobs/checkoutReminderCron');
 const startKeepAliveCron = require('../jobs/keepAliveCron');
+const startWeeklyScoreCron = require('../jobs/weeklyScoreCron');
 
 const app = express();
 const server = http.createServer(app);
@@ -46,6 +47,7 @@ startDailyReportsCron(io);
 startAutoAbsentCron(io);
 startCheckoutReminderCron(io);
 startKeepAliveCron();
+startWeeklyScoreCron(io);
 
 app.use((req, res, next) => {
     req.io = io;

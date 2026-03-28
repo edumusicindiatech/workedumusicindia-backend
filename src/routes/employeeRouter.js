@@ -1399,4 +1399,24 @@ employeeRouter.post('/media/multipart/abort', userAuth, async (req, res) => {
     }
 });
 
+// ==========================================
+// 30. EMPLOYEES LEADERBOARD
+// ==========================================
+employeeRouter.get('/leaderboard', userAuth, async (req, res) => {
+    try {
+        // Fetch only the fields we need to keep the payload tiny and fast
+        const leaderboard = await User.find({ role: 'Employee', isActive: true })
+            .select('name zone currentWeeklyScore currentWeeklyRank scoreTrend colorZone')
+            .sort({ currentWeeklyRank: 1 }); // Sort 1st, 2nd, 3rd...
+
+        res.status(200).json({
+            success: true,
+            data: leaderboard
+        });
+    } catch (error) {
+        console.error("Leaderboard Fetch Error:", error);
+        res.status(500).json({ success: false, message: "Error fetching leaderboard data" });
+    }
+});
+
 module.exports = employeeRouter;

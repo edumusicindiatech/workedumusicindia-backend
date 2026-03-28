@@ -36,6 +36,8 @@ const getMediaUploadFailureTemplate = require('../templates/employeeMediaUploadF
 const getNewMediaEmailTemplate = require('../templates/newMediaEmailTemplate');
 const { getVideoGradedTemplate } = require('../templates/employeeVideoGradedTemplateEmail');
 const { getVideoDeletedTemplate } = require('../templates/getMediaTemplates');
+const getWeeklyScoreEmailTemplate = require('../templates/employeeWeeklyScoreEmail');
+const { getAdminTopPerformersTemplate } = require('../templates/adminWeeklyTopPerformersEmail');
 
 require('dotenv').config();
 
@@ -576,6 +578,35 @@ const sendVideoDeletedEmailToEmployee = async (email, employeeName, schoolName, 
         return false;
     }
 };
+
+const sendWeeklyScoreToEmployee = async (email, name, score, rank, colorZone, scoreTrend, stats) => {
+    try {
+        const html = getWeeklyScoreEmailTemplate(name, score, rank, colorZone, scoreTrend, stats);
+        await transporter.sendMail({
+            from: `"System Notifications" <${process.env.EMAIL_FROM}>`,
+            to: email,
+            subject: `Weekly Score: ${score}/100 (Rank #${rank})`,
+            html: html
+        });
+    } catch (error) {
+        console.error(`Failed to send weekly score to ${email}:`, error);
+    }
+};
+
+const sendTopPerformersToAdmin = async (email, adminName, topRankers) => {
+    try {
+        const html = getAdminTopPerformersTemplate(adminName, topRankers);
+        await transporter.sendMail({
+            from: `"System Alerts" <${process.env.EMAIL_FROM}>`,
+            to: email,
+            subject: `🏆 Weekly Results: Top 3 Employees`,
+            html: html
+        });
+    } catch (error) {
+        console.error(`Failed to send admin summary to ${email}:`, error);
+    }
+};
+
 module.exports = {
     sendAdminWelcomeEmail,
     sendEmployeeWelcomeEmail,
@@ -617,5 +648,8 @@ module.exports = {
     sendMediaUploadFailureEmailToEmployee,
     sendNewMediaEmailToAdmin,
     sendVideoGradedEmailToEmployee,
-    sendVideoDeletedEmailToEmployee
+    sendVideoDeletedEmailToEmployee,
+    sendWeeklyScoreToEmployee,
+    sendTopPerformersToAdmin    
+
 };
