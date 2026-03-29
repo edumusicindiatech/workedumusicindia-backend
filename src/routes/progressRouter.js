@@ -18,7 +18,7 @@ progressRouter.get('/employees', userAuth, adminAuth, async (req, res) => {
         // We no longer calculate on the fly. 
         // We just fetch the pre-calculated scores saved by our Saturday Cron Job.
         const employees = await User.find({ role: 'Employee', isActive: true })
-            .select('name zone currentWeeklyScore currentWeeklyRank scoreTrend colorZone');
+            .select('name zone currentWeeklyScore currentWeeklyRank scoreTrend colorZone, profilePicture');
 
         // Format the data to match what your Frontend "ProgressReport" component expects
         const progressData = employees.map(emp => ({
@@ -29,7 +29,8 @@ progressRouter.get('/employees', userAuth, adminAuth, async (req, res) => {
             currentWeeklyScore: emp.currentWeeklyScore,
             currentWeeklyRank: emp.currentWeeklyRank,
             scoreTrend: emp.scoreTrend,
-            colorZone: emp.colorZone
+            colorZone: emp.colorZone,
+            profilePicture: emp.profilePicture
         }));
 
         // Sort them by rank (Rank 1 at the top)

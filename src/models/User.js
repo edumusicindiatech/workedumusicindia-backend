@@ -21,6 +21,7 @@ const userSchema = new mongoose.Schema({
     employeeId: { type: String, required: true, unique: true },
     isFirstLogin: { type: Boolean, default: true },
     mobile: { type: String },
+    profilePicture: { type: String, default: null },
     role: { type: String, enum: ['SuperAdmin', 'Admin', 'Employee'], default: 'Employee' },
     designation: { type: String, default: 'Teacher' },
     zone: { type: String },
@@ -33,7 +34,7 @@ const userSchema = new mongoose.Schema({
         adminNotifications: { type: Boolean, default: true },
         employeeNotifications: { type: Boolean, default: true }
     },
-    
+
     currentWeeklyScore: {
         type: Number,
         default: 0

@@ -33,6 +33,7 @@ const {
 const DailyReports = require('../models/DailyReports');
 const LeaveRequest = require('../models/LeaveRequest');
 const path = require('path');
+const assetsS3Client = require('../config/assetsS3Client');
 
 const employeeRouter = express.Router();
 
@@ -86,6 +87,7 @@ employeeRouter.get('/me/profile', userAuth, async (req, res) => {
                 role: user.role,
                 designation: user.designation,
                 mobile: user.mobile,
+                profilePicture:user.profilePicture,
                 zone: user.zone,
                 isFirstLogin: user.isFirstLogin,
                 preferences: user.preferences,
@@ -1461,7 +1463,7 @@ employeeRouter.get('/leaderboard', userAuth, async (req, res) => {
     try {
         // Fetch only the fields we need to keep the payload tiny and fast
         const leaderboard = await User.find({ role: 'Employee', isActive: true })
-            .select('name zone currentWeeklyScore currentWeeklyRank scoreTrend colorZone')
+            .select('name zone currentWeeklyScore currentWeeklyRank scoreTrend colorZone profilePicture')
             .sort({ currentWeeklyRank: 1 }); // Sort 1st, 2nd, 3rd...
 
         res.status(200).json({
@@ -1551,6 +1553,120 @@ employeeRouter.get('/my-graph', userAuth, async (req, res) => {
     } catch (error) {
         console.error("Employee Graph Error:", error);
         res.status(500).json({ success: false, message: "Error fetching graph data" });
+    }
+});
+
+employeeRouter.post("/profile-picture/presign", userAuth, async (req, res) => {
+    try {
+        if (!process.env.CF_ASSETS_PUBLIC_URL) {
+            return res.status(500).json({ error: "Server misconfiguration: CF_ASSETS_PUBLIC_URL is missing." });
+        }
+
+        const { fileType, extension } = req.body;
+
+        if (!fileType || !fileType.startsWith('image/')) {
+            return res.status(400).json({ success: false, message: 'Invalid file type. Must be an image.' });
+        }
+
+        // Create a clean filename: profile-pics/userId_timestamp.jpg
+        const fileName = `profile-pics/${req.user._id}_${Date.now()}.${extension}`;
+
+        const command = new PutObjectCommand({
+            Bucket: process.env.CF_ASSETS_BUCKET,
+            Key: fileName,
+            ContentType: fileType,
+        });
+
+        // Generate the URL (expires in 5 minutes)
+        const presignedUrl = await getSignedUrl(assetsS3Client, command, { expiresIn: 300 });
+        const publicUrl = `${process.env.CF_ASSETS_PUBLIC_URL}/${fileName}`;
+
+        return res.status(200).json({
+            success: true,
+            presignedUrl,
+            publicUrl
+        });
+
+    } catch (error) {
+        console.error("Profile Pic Presign Error:", error);
+        return res.status(500).json({ success: false, message: "Failed to generate upload URL." });
+    }
+});
+
+// --- 2. Confirm Upload and Update Database ---
+employeeRouter.put("/profile-picture/confirm", userAuth, async (req, res) => {
+    try {
+        const { publicUrl } = req.body;
+
+        if (!publicUrl) {
+            return res.status(400).json({ success: false, message: 'Public URL is required.' });
+        }
+
+        const updatedUser = await User.findByIdAndUpdate(
+            req.user._id,
+            { profilePicture: publicUrl },
+            { new: true }
+        ).select('-password');
+
+        if (!updatedUser) {
+            return res.status(404).json({ success: false, message: 'User not found.' });
+        }
+
+        return res.status(200).json({
+            success: true,
+            message: 'Profile picture updated successfully!',
+            user: updatedUser
+        });
+
+    } catch (error) {
+        console.error("Profile Pic Confirmation Error:", error);
+        return res.status(500).json({ success: false, message: 'Failed to update user profile.' });
+    }
+});
+
+employeeRouter.delete("/profile-picture", userAuth, async (req, res) => {
+    try {
+        // 1. Find the user first so we can grab the current picture URL
+        const user = await User.findById(req.user._id);
+
+        if (!user) {
+            return res.status(404).json({ success: false, message: 'User not found.' });
+        }
+
+        // 2. If a profile picture exists, delete it from Cloudflare R2
+        if (user.profilePicture) {
+            try {
+                const urlObj = new URL(user.profilePicture);
+                const fileKey = urlObj.pathname.substring(1); // removes the leading '/'
+
+                const deleteCommand = new DeleteObjectCommand({
+                    Bucket: process.env.CF_ASSETS_BUCKET,
+                    Key: fileKey,
+                });
+
+                await assetsS3Client.send(deleteCommand);
+                console.log(`Successfully deleted ${fileKey} from Cloudflare R2`);
+            } catch (r2Error) {
+                console.error("Warning: Failed to delete image from R2:", r2Error);
+            }
+        }
+
+        // 3. Set the profilePicture field to null in MongoDB
+        const updatedUser = await User.findByIdAndUpdate(
+            req.user._id,
+            { profilePicture: null },
+            { new: true }
+        ).select('-password');
+
+        return res.status(200).json({
+            success: true,
+            message: 'Profile picture completely removed!',
+            user: updatedUser
+        });
+
+    } catch (error) {
+        console.error("Profile Pic Delete Error:", error);
+        return res.status(500).json({ success: false, message: 'Failed to remove profile picture.' });
     }
 });
 

@@ -160,7 +160,7 @@ adminRouter.get('/roster', userAuth, adminAuth, async (req, res) => {
             : { role: 'Employee' };
 
         const employees = await User.find(queryFilter)
-            .select('_id name email designation zone role')
+            .select('_id name email designation zone role profilePicture')
             .sort({ createdAt: -1 });
 
         const formattedRoster = employees.map(emp => ({
@@ -169,6 +169,7 @@ adminRouter.get('/roster', userAuth, adminAuth, async (req, res) => {
             role: emp.designation || 'Unassigned',
             location: emp.zone || 'Unassigned',
             email: emp.email,
+            profilePicture: emp.profilePicture,
             systemRole: emp.role
         }));
 
@@ -1337,10 +1338,9 @@ adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
     try {
         const today = new Date();
 
-        // 1. Define the 24-hour window for "Today" in IST (Kolkata)
+        // 1. Define the 24-hour window for "Today"
         const todayStart = new Date();
         todayStart.setHours(0, 0, 0, 0);
-
         const todayEnd = new Date();
         todayEnd.setHours(23, 59, 59, 999);
 
@@ -1355,8 +1355,7 @@ adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
         const employees = await User.find({ role: 'Employee', isActive: true });
         const totalEmployees = employees.length;
 
-        // 3. THE FIX: Count UNIQUE people on leave today
-        // .distinct('employee') ensures we count the human being, not the number of requests
+        // 3. Count UNIQUE people on leave today
         const uniqueEmployeesOnLeave = await LeaveRequest.distinct('employee', {
             status: 'approved',
             fromDate: { $lte: todayEnd },
@@ -1376,17 +1375,17 @@ adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
             }
         });
 
-        // 5. Fetch Today's Attendance
+        // 5. Fetch Today's Attendance (🔥 UPDATED POPULATE)
         const todaysAttendance = await Attendance.find({ date: dateString })
-            .populate('teacher', 'name zone')
+            .populate('teacher', 'name zone profilePicture') // Added profilePicture
             .populate('school', 'schoolName address')
             .sort({ createdAt: -1 });
 
-        // 6. Fetch Recent Leave Actions (Last 48 hours for the activity log)
+        // 6. Fetch Recent Leave Actions (🔥 UPDATED POPULATE)
         const recentLeaves = await LeaveRequest.find({
             updatedAt: { $gte: new Date(Date.now() - 48 * 60 * 60 * 1000) }
         })
-            .populate('employee', 'name zone')
+            .populate('employee', 'name zone profilePicture') // Added profilePicture
             .sort({ updatedAt: -1 });
 
         let presentCount = 0;
@@ -1399,12 +1398,13 @@ adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
 
         const pendingCount = Math.max(0, expectedShifts - todaysAttendance.length);
 
-        // 7. Format Attendance for Activity Log
+        // 7. Format Attendance (🔥 INCLUDED profilePicture)
         const attendanceActivity = todaysAttendance.map(att => {
             const diffMins = Math.round((new Date() - new Date(att.createdAt)) / 60000);
             return {
                 id: att._id,
                 name: att.teacher?.name || "Unknown Staff",
+                profilePicture: att.teacher?.profilePicture || null, // Pass it to frontend
                 zone: att.teacher?.zone || "N/A",
                 school: att.school?.schoolName || "Unknown School",
                 category: att.band,
@@ -1412,16 +1412,17 @@ adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
                 time: new Date(att.checkInTime || att.createdAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
                 timeAgo: diffMins < 1 ? "Just now" : diffMins < 60 ? `${diffMins}m ago` : `${Math.floor(diffMins / 60)}h ago`,
                 status: att.status,
-                createdAt: att.createdAt // Standard key for sorting
+                createdAt: att.createdAt
             };
         });
 
-        // 8. Format Leave Actions for Activity Log
+        // 8. Format Leave Actions (🔥 INCLUDED profilePicture)
         const leaveActivity = recentLeaves.map(leave => {
             const diffMins = Math.round((new Date() - new Date(leave.updatedAt)) / 60000);
             return {
                 id: leave._id,
                 name: leave.employee?.name || "Unknown Staff",
+                profilePicture: leave.employee?.profilePicture || null, // Pass it to frontend
                 zone: leave.employee?.zone || "N/A",
                 leaveRange: `${new Date(leave.fromDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })} - ${new Date(leave.toDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}`,
                 category: "Leave Request",
@@ -1429,16 +1430,16 @@ adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
                 time: new Date(leave.updatedAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
                 timeAgo: diffMins < 1 ? "Just now" : diffMins < 60 ? `${diffMins}m ago` : `${Math.floor(diffMins / 60)}h ago`,
                 status: leave.status === 'approved' ? 'Approved' : 'Rejected',
-                createdAt: leave.updatedAt // Using updatedAt to show when the decision was made
+                createdAt: leave.updatedAt
             };
         });
 
-        // 9. Merge and Sort (Latest First)
+        // 9. Merge and Sort
         const combinedActivity = [...attendanceActivity, ...leaveActivity]
             .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
             .slice(0, 15);
 
-        // 10. Send Final Response
+        // 10. Send Response
         res.json({
             success: true,
             data: {
@@ -1447,7 +1448,7 @@ adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
                     presentToday: presentCount,
                     noShow: noShowCount,
                     pending: pendingCount,
-                    onLeaveToday // Represents headcount of unique persons
+                    onLeaveToday
                 },
                 recentActivity: combinedActivity
             }
@@ -1709,7 +1710,7 @@ adminRouter.get('/leave-requests', userAuth, adminAuth, async (req, res) => {
         if (status) query.status = status;
 
         const leaveRequests = await LeaveRequest.find(query)
-            .populate('employee', 'name email')
+            .populate('employee', 'name email profilePicture')
             .sort({ updatedAt: -1, createdAt: -1 }); // Sort by newest updates first
 
         const formattedRequests = leaveRequests.map(request => ({
@@ -1717,6 +1718,7 @@ adminRouter.get('/leave-requests', userAuth, adminAuth, async (req, res) => {
             employeeName: request.employee ? request.employee.name : "Unknown Employee",
             employeeEmail: request.employee ? request.employee.email : "N/A",
             fromDate: new Date(request.fromDate).toISOString().split('T')[0],
+            profilePicture: request.employee ? request.employee.profilePicture : null,
             toDate: new Date(request.toDate).toISOString().split('T')[0],
             reason: request.reason,
             status: request.status,
