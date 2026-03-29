@@ -21,6 +21,9 @@ const LeaveRequest = require('../models/LeaveRequest');
 const Settings = require('../models/Settings');
 const { canSendEmailToUser } = require('../utils/canSendEmailToUser');
 const MediaLog = require('../models/MediaLog');
+const { PutObjectCommand } = require('@aws-sdk/client-s3');
+const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+const assetsS3Client = require('../config/assetsS3Client');
 
 // ==========================================
 // 1. CREATE ADMIN (SuperAdmin Only)
@@ -1996,5 +1999,139 @@ adminRouter.delete('/media/:logId/file/:fileId', userAuth, adminAuth, async (req
         res.status(500).json({ success: false, message: "Failed to delete media." });
     }
 });
+
+// ==========================================
+// 28. GENERATE PRESIGNED URL FOR AVATAR
+// ==========================================
+adminRouter.post('/profile-picture/presign', userAuth, adminAuth, async (req, res) => {
+    try {
+        const { fileType, extension } = req.body;
+        const folder = req.user.role === 'SuperAdmin' ? 'superadmin-profiles' : 'admin-profiles';
+        const fileName = `${folder}/${req.user._id}-${Date.now()}.${extension}`;
+
+        const command = new PutObjectCommand({
+            Bucket: process.env.CF_ASSETS_BUCKET,
+            Key: fileName,
+            ContentType: fileType,
+        });
+
+        // Generate the URL (expires in 5 minutes)
+        const presignedUrl = await getSignedUrl(assetsS3Client, command, { expiresIn: 300 });
+        const publicUrl = `${process.env.CF_ASSETS_PUBLIC_URL}/${fileName}`;
+
+        res.json({ success: true, presignedUrl, publicUrl });
+
+    } catch (error) {
+        console.error("Admin Presign Error:", error);
+        res.status(500).json({ success: false, message: "Failed to generate upload URL" });
+    }
+});
+
+// ==========================================
+// 29. CONFIRM & SAVE AVATAR TO DATABASE
+// ==========================================
+adminRouter.put('/profile-picture/confirm', userAuth, adminAuth, async (req, res) => {
+    try {
+        const { publicUrl } = req.body;
+
+        if (!publicUrl) {
+            return res.status(400).json({ success: false, message: "No URL provided" });
+        }
+
+        // Update the user's document in the database
+        req.user.profilePicture = publicUrl;
+        await req.user.save();
+
+        res.json({ success: true, profilePicture: publicUrl, message: "Profile picture updated successfully" });
+    } catch (error) {
+        console.error("Admin Confirm Avatar Error:", error);
+        res.status(500).json({ success: false, message: "Failed to save profile picture" });
+    }
+});
+
+// ==========================================
+// 30. DELETE AVATAR
+// ==========================================
+adminRouter.delete('/profile-picture', userAuth, adminAuth, async (req, res) => {
+    try {
+        // Remove the profile picture from the user's document
+        req.user.profilePicture = null;
+        await req.user.save();
+
+        // Note: If you want to delete the actual file from your S3 bucket to save space, 
+        // you would add your AWS DeleteObjectCommand logic here too.
+
+        res.json({ success: true, message: "Profile picture removed successfully" });
+    } catch (error) {
+        console.error("Admin Delete Avatar Error:", error);
+        res.status(500).json({ success: false, message: "Failed to remove profile picture" });
+    }
+});
+
+// ==========================================
+// 31. FETCH ADMIN PROFILE
+// ==========================================
+adminRouter.get('/me/profile', userAuth, adminAuth, async (req, res) => {
+    try {
+        // req.user is already attached by your userAuth middleware
+        // We just need to select the fields we want to send back to the frontend
+
+        const adminData = await User.findById(req.user._id)
+            .select('name email role profilePicture mobile') // Add any other fields you want to display
+            .lean();
+
+        if (!adminData) {
+            return res.status(404).json({ success: false, message: "Admin profile not found" });
+        }
+
+        res.json({
+            success: true,
+            user: adminData
+        });
+
+    } catch (error) {
+        console.error("Fetch Admin Profile Error:", error);
+        res.status(500).json({ success: false, message: "Failed to fetch admin profile" });
+    }
+});
+
+// ==========================================
+// 31. CHANGE ADMIN / SUPERADMIN PASSWORD (MANUAL HASH)
+// ==========================================
+adminRouter.put('/profile/password', userAuth, adminAuth, async (req, res) => {
+    try {
+        const { newPassword } = req.body;
+
+        // 1. Basic Validation
+        if (!newPassword || newPassword.length < 6) {
+            return res.status(400).json({
+                success: false,
+                message: "Password must be at least 6 characters long."
+            });
+        }
+
+        // 2. Generate Salt and Hash
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(newPassword, salt);
+
+        // 3. Update User directly
+        // We use findByIdAndUpdate here since we are doing a manual hash
+        const user = await User.findByIdAndUpdate(
+            req.user._id,
+            { password: hashedPassword },
+            { new: true }
+        );
+
+        if (!user) {
+            return res.status(404).json({ success: false, message: "Admin not found." });
+        }
+
+        res.json({ success: true, message: "Password updated successfully." });
+    } catch (error) {
+        console.error("Admin Password Change Error:", error);
+        res.status(500).json({ success: false, message: "Internal server error." });
+    }
+});
+
 
 module.exports = adminRouter;

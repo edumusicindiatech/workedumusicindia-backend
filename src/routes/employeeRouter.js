@@ -87,7 +87,7 @@ employeeRouter.get('/me/profile', userAuth, async (req, res) => {
                 role: user.role,
                 designation: user.designation,
                 mobile: user.mobile,
-                profilePicture:user.profilePicture,
+                profilePicture: user.profilePicture,
                 zone: user.zone,
                 isFirstLogin: user.isFirstLogin,
                 preferences: user.preferences,
@@ -1556,6 +1556,9 @@ employeeRouter.get('/my-graph', userAuth, async (req, res) => {
     }
 });
 
+// ============================================================================
+// 32. ADMIN PROFILE PRESIGN URL
+// ============================================================================
 employeeRouter.post("/profile-picture/presign", userAuth, async (req, res) => {
     try {
         if (!process.env.CF_ASSETS_PUBLIC_URL) {
@@ -1593,7 +1596,9 @@ employeeRouter.post("/profile-picture/presign", userAuth, async (req, res) => {
     }
 });
 
-// --- 2. Confirm Upload and Update Database ---
+// ============================================================================
+// 33. CHANGE PROFILE PICTURE OF ADMIN/SUPERADMIN
+// ============================================================================
 employeeRouter.put("/profile-picture/confirm", userAuth, async (req, res) => {
     try {
         const { publicUrl } = req.body;
@@ -1624,6 +1629,9 @@ employeeRouter.put("/profile-picture/confirm", userAuth, async (req, res) => {
     }
 });
 
+// ============================================================================
+// 34. DELETE PROFILE PICTURE
+// ============================================================================
 employeeRouter.delete("/profile-picture", userAuth, async (req, res) => {
     try {
         // 1. Find the user first so we can grab the current picture URL
