@@ -2006,8 +2006,15 @@ adminRouter.delete('/media/:logId/file/:fileId', userAuth, adminAuth, async (req
 adminRouter.post('/profile-picture/presign', userAuth, adminAuth, async (req, res) => {
     try {
         const { fileType, extension } = req.body;
+
+        // 1. Sanitize the name (replace spaces with underscores, remove special characters)
+        const safeName = req.user.name.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
+
+        // 2. Determine Folder
         const folder = req.user.role === 'SuperAdmin' ? 'superadmin-profiles' : 'admin-profiles';
-        const fileName = `${folder}/${req.user._id}-${Date.now()}.${extension}`;
+
+        // 3. Construct the filename: ROLE_NAME_PROFILE_PIC_TIMESTAMP.extension
+        const fileName = `${folder}/${req.user.role}_${safeName}_PROFILE_PIC_${Date.now()}.${extension}`;
 
         const command = new PutObjectCommand({
             Bucket: process.env.CF_ASSETS_BUCKET,

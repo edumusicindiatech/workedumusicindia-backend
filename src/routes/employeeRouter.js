@@ -1557,7 +1557,7 @@ employeeRouter.get('/my-graph', userAuth, async (req, res) => {
 });
 
 // ============================================================================
-// 32. ADMIN PROFILE PRESIGN URL
+// 32. EMPLOYEE PROFILE PRESIGN URL
 // ============================================================================
 employeeRouter.post("/profile-picture/presign", userAuth, async (req, res) => {
     try {
@@ -1571,8 +1571,14 @@ employeeRouter.post("/profile-picture/presign", userAuth, async (req, res) => {
             return res.status(400).json({ success: false, message: 'Invalid file type. Must be an image.' });
         }
 
-        // Create a clean filename: profile-pics/userId_timestamp.jpg
-        const fileName = `profile-pics/${req.user._id}_${Date.now()}.${extension}`;
+        // 1. Sanitize the name (replace spaces with underscores, remove special characters)
+        const safeName = req.user.name.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
+
+        // 2. Determine Role (fallback to 'Employee' if not explicitly set)
+        const role = req.user.role || 'Employee';
+
+        // 3. Construct the filename: ROLE_NAME_PROFILE_PIC_TIMESTAMP.extension
+        const fileName = `profile-pics/${role}_${safeName}_PROFILE_PIC_${Date.now()}.${extension}`;
 
         const command = new PutObjectCommand({
             Bucket: process.env.CF_ASSETS_BUCKET,
@@ -1597,7 +1603,7 @@ employeeRouter.post("/profile-picture/presign", userAuth, async (req, res) => {
 });
 
 // ============================================================================
-// 33. CHANGE PROFILE PICTURE OF ADMIN/SUPERADMIN
+// 33. CHANGE PROFILE PICTURE OF EMPLOYEE
 // ============================================================================
 employeeRouter.put("/profile-picture/confirm", userAuth, async (req, res) => {
     try {
