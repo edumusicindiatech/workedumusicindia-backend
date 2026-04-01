@@ -26,13 +26,20 @@ const userSchema = new mongoose.Schema({
     designation: { type: String, default: 'Teacher' },
     zone: { type: String },
 
-    assignments: [assignmentSchema], // Embedded array for their specific schedules
+    assignments: [assignmentSchema], 
 
-    // Global Settings from the final screenshots
+    // FIXED: Added frontend-matching keys and initialized the parent object
     preferences: {
-        systemLanguage: { type: String, default: 'English' },
-        adminNotifications: { type: Boolean, default: true },
-        employeeNotifications: { type: Boolean, default: true }
+        type: {
+            systemLanguage: { type: String, default: 'English' },
+            // Added these to match what your React frontend is asking for
+            globalAdminNotifications: { type: Boolean, default: true },
+            globalEmployeeNotifications: { type: Boolean, default: true },
+            // Kept your original keys so nothing is removed and flow remains intact
+            adminNotifications: { type: Boolean, default: true },
+            employeeNotifications: { type: Boolean, default: true }
+        },
+        default: () => ({}) // CRITICAL FIX: Ensures nested defaults are created for new users
     },
 
     currentWeeklyScore: {
@@ -46,12 +53,12 @@ const userSchema = new mongoose.Schema({
     scoreTrend: {
         type: String,
         enum: ['up', 'down', 'flat'],
-        default: 'flat' // 'up' = 📈, 'down' = 📉
+        default: 'flat' 
     },
     colorZone: {
         type: String,
         enum: ['red', 'blue', 'green'],
-        default: 'red' // <50: red, 50-69: blue, 70+: green
+        default: 'red' 
     },
 
     isActive: { type: Boolean, default: true }

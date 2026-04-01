@@ -812,12 +812,25 @@ employeeRouter.put('/profile/password', userAuth, async (req, res) => {
 // ==========================================
 employeeRouter.put('/settings/preferences', userAuth, async (req, res) => {
     try {
-        const { systemLanguage, employeeNotifications } = req.body;
+        const { systemLanguage, employeeNotifications, adminNotifications } = req.body;
 
         // Use $set to target specific nested fields without erasing others
         const updateData = {};
-        if (systemLanguage !== undefined) updateData['preferences.systemLanguage'] = systemLanguage;
-        if (employeeNotifications !== undefined) updateData['preferences.employeeNotifications'] = employeeNotifications;
+
+        if (systemLanguage !== undefined) {
+            updateData['preferences.systemLanguage'] = systemLanguage;
+        }
+
+        if (employeeNotifications !== undefined) {
+            // Update the keys the UI actually looks for
+            updateData['preferences.globalEmployeeNotifications'] = employeeNotifications;
+            updateData['preferences.employeeNotifications'] = employeeNotifications;
+        }
+
+        if (adminNotifications !== undefined) {
+            updateData['preferences.globalAdminNotifications'] = adminNotifications;
+            updateData['preferences.adminNotifications'] = adminNotifications;
+        }
 
         const user = await User.findByIdAndUpdate(
             req.user._id,

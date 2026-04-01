@@ -6,6 +6,6 @@ const settingsSchema = new mongoose.Schema({
 
     // Any Admin or SuperAdmin can touch this
     globalEmployeeNotifications: { type: Boolean, default: true }
-});
+}, { timestamps: true }); // Added timestamps for audit tracking
 
 module.exports = mongoose.model('Settings', settingsSchema);

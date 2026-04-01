@@ -23,7 +23,7 @@ const getAdminAutoAbsentEmailTemplate = (adminName, employeeName, schoolName, ca
     }
     </style></head><body>
     <div class="container"><div class="badge">Critical Alert: Auto-Absent</div>
-    <h2>Employee Failed to Arrive</h2><p>Hello ${adminName},</p><p><strong>${employeeName}</strong> failed to check into their assigned school within 1 hour of the scheduled time and has been automatically marked Absent by the system.</p>
+    <h2>Employee Failed to Arrive</h2><p>Hello ${adminName},</p><p><strong>${employeeName}</strong> failed to check into their assigned school within 2 hour of the scheduled time and has been automatically marked Absent by the system.</p>
     <div class="card">
         <div class="card-item"><span class="label">School & Category</span><div class="value">${schoolName} (${category})</div></div>
         <div class="card-item"><span class="label">Expected Start Time</span><div class="value">${scheduledTime}</div></div>
