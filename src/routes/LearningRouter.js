@@ -112,8 +112,11 @@ LearningRouter.post('/', userAuth, adminAuth, async (req, res) => {
         // --- BACKGROUND TASK (Grouped notifications) ---
         (async () => {
             try {
+                // 1. Get the sender's ID as a strict string
+                const senderIdStr = req.user._id.toString();
+
                 const usersToNotify = await User.find({
-                    _id: { $ne: req.user._id },
+                    _id: { $ne: req.user._id }, // Mongoose attempts to cast here
                     isActive: true
                 });
 
@@ -123,6 +126,9 @@ LearningRouter.post('/', userAuth, adminAuth, async (req, res) => {
                     : `${req.user.name} uploaded: "${title}".`;
 
                 const notificationPromises = usersToNotify.map(async (targetUser) => {
+                    // 2. FOOLPROOF FALLBACK: Explicitly skip the uploader
+                    if (targetUser._id.toString() === senderIdStr) return null;
+
                     // Create one notification for the batch
                     const notif = await Notification.create({
                         recipient: targetUser._id,
