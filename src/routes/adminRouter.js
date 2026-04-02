@@ -673,7 +673,16 @@ adminRouter.put('/employees/:id', userAuth, adminAuth, async (req, res) => {
         if (req.user.role === 'Admin' && ['Admin', 'SuperAdmin'].includes(targetUser.role)) {
             return res.status(403).json({ success: false, message: "Permission denied. Admins cannot edit other administrators." });
         }
-
+        if (email && email !== targetUser.email) {
+            const existingUser = await User.findOne({ email });
+            if (existingUser) {
+                return res.status(409).json({
+                    success: false,
+                    message: "This email address is already in use by another employee."
+                });
+            }
+            targetUser.email = email;
+        }
         if (name) targetUser.name = name;
         if (email) targetUser.email = email;
         if (phone) targetUser.mobile = phone;
@@ -699,8 +708,6 @@ adminRouter.put('/employees/:id', userAuth, adminAuth, async (req, res) => {
                 timestamp: userNotif.createdAt
             });
         }
-
-
 
         if (await canSendEmailToUser(targetUser)) {
             sendEmployeeProfileUpdatedEmail(targetUser.email, targetUser.name).catch(console.error);
