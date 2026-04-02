@@ -38,6 +38,7 @@ const { getVideoGradedTemplate } = require('../templates/employeeVideoGradedTemp
 const { getVideoDeletedTemplate } = require('../templates/getMediaTemplates');
 const getWeeklyScoreEmailTemplate = require('../templates/employeeWeeklyScoreEmail');
 const { getAdminTopPerformersTemplate } = require('../templates/adminWeeklyTopPerformersEmail');
+const getNewLearningMediaTemplate = require('../templates/adminNewLearningMediaUpload');
 
 require('dotenv').config();
 
@@ -607,6 +608,21 @@ const sendTopPerformersToAdmin = async (email, adminName, topRankers) => {
     }
 };
 
+const sendNewLearningVideoEmailToEmployee = async (email, employeeName, adminName, videoTitle) => {
+    try {
+        const info = await transporter.sendMail({
+            from: `"Training Vault" <${process.env.EMAIL_FROM}>`,
+            to: email,
+            subject: `New Lesson Available: ${videoTitle}`,
+            html: getNewLearningMediaTemplate(employeeName, adminName, videoTitle)
+        });
+        return true;
+    } catch (e) {
+        console.error("New Learning Video Email Error:", e);
+        return false;
+    }
+};
+
 module.exports = {
     sendAdminWelcomeEmail,
     sendEmployeeWelcomeEmail,
@@ -650,6 +666,7 @@ module.exports = {
     sendVideoGradedEmailToEmployee,
     sendVideoDeletedEmailToEmployee,
     sendWeeklyScoreToEmployee,
-    sendTopPerformersToAdmin    
+    sendTopPerformersToAdmin,
+    sendNewLearningVideoEmailToEmployee
 
 };

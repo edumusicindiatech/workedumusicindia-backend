@@ -5,11 +5,22 @@ const path = require('path');
 const { PutObjectCommand, DeleteObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 
-// Adjust these imports based on your exact file structure
+// Models
 const LearningMedia = require('../models/LearningMedia');
+const User = require('../models/User'); // IMPORT USER MODEL
+const Notification = require('../models/Notification'); // IMPORT NOTIFICATION MODEL
+
+// Middleware & Config
 const userAuth = require('../middleware/userAuth');
 const adminAuth = require('../middleware/adminAuth');
-const s3Client = require('../config/s3')
+const s3Client = require('../config/s3');
+
+// Email Services (Adjust path if needed)
+const {
+    sendNewLearningVideoEmailToEmployee,
+    canSendEmailToUser
+} = require('../utils/emailService');
+
 // ==========================================
 // 1. GET ALL LEARNING VIDEOS (For Everyone)
 // ==========================================
@@ -58,7 +69,7 @@ LearningRouter.post('/presign', userAuth, adminAuth, async (req, res) => {
 });
 
 // ==========================================
-// 3. SAVE MEDIA TO DATABASE (Admins Only)
+// 3. SAVE MEDIA TO DATABASE & NOTIFY (Admins Only)
 // ==========================================
 LearningRouter.post('/', userAuth, adminAuth, async (req, res) => {
     try {
@@ -74,13 +85,77 @@ LearningRouter.post('/', userAuth, adminAuth, async (req, res) => {
             fileUrl,
             uploader: req.user._id,
             uploaderName: req.user.name,
-            uploaderRole: req.user.role // Automatically captures Admin or SuperAdmin
+            uploaderRole: req.user.role
         });
 
+        // Broadcast to all active users so their gallery updates instantly
+        if (req.io) {
+            req.io.emit('learning_video_added', newVideo);
+        }
+
         res.status(201).json({ success: true, message: "Lesson uploaded successfully!", data: newVideo });
+
+        // --- BACKGROUND TASK ---
+        (async () => {
+            try {
+                // 1. Fetch everyone except the uploader
+                const usersToNotify = await User.find({
+                    _id: { $ne: req.user._id },
+                    isActive: true
+                });
+
+                const notifTitle = 'New Training Video';
+                const notifMessage = `${req.user.name} uploaded: "${title}".`;
+
+                const notificationPromises = usersToNotify.map(async (targetUser) => {
+                    // 2. Create In-App Notification
+                    const notif = await Notification.create({
+                        recipient: targetUser._id,
+                        title: notifTitle,
+                        message: notifMessage,
+                        type: 'Media'
+                    });
+
+                    // 3. Socket Push
+                    if (req.io) {
+                        req.io.to(targetUser._id.toString()).emit('new_notification', notif);
+                    }
+
+                    // 4. SMART EMAIL LOGIC
+                    const prefs = targetUser.preferences?.type || targetUser.preferences || {};
+                    const canSendEmployee = targetUser.role === 'Employee' && (prefs.globalEmployeeNotifications !== false);
+                    const canSendAdmin = (targetUser.role === 'Admin' || targetUser.role === 'SuperAdmin') && (prefs.globalAdminNotifications !== false);
+
+                    if (canSendEmployee || canSendAdmin) {
+                        const emailTask = sendNewLearningVideoEmailToEmployee(
+                            targetUser.email,
+                            targetUser.name,
+                            req.user.name,
+                            title
+                        );
+
+                        // 10 second timeout per email to prevent hanging the event loop
+                        const timeoutTask = new Promise((_, reject) =>
+                            setTimeout(() => reject(new Error('SMTP Timeout')), 10000)
+                        );
+
+                        return Promise.race([emailTask, timeoutTask]);
+                    }
+                    return null;
+                });
+
+                await Promise.allSettled(notificationPromises);
+
+            } catch (bgError) {
+                console.error("Critical Background Notification Error:", bgError);
+            }
+        })();
+
     } catch (error) {
         console.error("Create Learning Media Error:", error);
-        res.status(500).json({ success: false, message: "Failed to save the training video." });
+        if (!res.headersSent) {
+            res.status(500).json({ success: false, message: "Failed to save the training video." });
+        }
     }
 });
 
@@ -95,10 +170,9 @@ LearningRouter.delete('/:id', userAuth, adminAuth, async (req, res) => {
             return res.status(404).json({ success: false, message: "Training video not found." });
         }
 
-        // 1. Delete the physical file from Cloudflare R2 to save storage space
         try {
             const urlObj = new URL(video.fileUrl);
-            const fileKey = urlObj.pathname.substring(1); // Removes the leading '/'
+            const fileKey = urlObj.pathname.substring(1);
 
             await s3Client.send(new DeleteObjectCommand({
                 Bucket: process.env.R2_BUCKET_NAME,
@@ -108,8 +182,11 @@ LearningRouter.delete('/:id', userAuth, adminAuth, async (req, res) => {
             console.error("Failed to delete from R2, but continuing DB cleanup:", r2Error);
         }
 
-        // 2. Remove the record from the database
         await video.deleteOne();
+
+        if (req.io) {
+            req.io.emit('learning_video_deleted', { videoId: req.params.id });
+        }
 
         res.status(200).json({ success: true, message: "Video deleted successfully." });
 
@@ -129,11 +206,15 @@ LearningRouter.put('/:id', userAuth, adminAuth, async (req, res) => {
         const video = await LearningMedia.findByIdAndUpdate(
             req.params.id,
             { title, description },
-            { new: true } // Returns the updated document
+            { new: true }
         );
 
         if (!video) {
             return res.status(404).json({ success: false, message: "Video not found." });
+        }
+
+        if (req.io) {
+            req.io.emit('learning_video_updated', video);
         }
 
         res.status(200).json({ success: true, data: video });
@@ -157,7 +238,6 @@ LearningRouter.post('/download', userAuth, async (req, res) => {
         const urlObject = new URL(fileUrl);
         const fileKey = urlObject.pathname.substring(1);
 
-        // Forces the browser to download the file instead of playing it
         const command = new GetObjectCommand({
             Bucket: process.env.R2_BUCKET_NAME,
             Key: fileKey,
