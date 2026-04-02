@@ -21,9 +21,10 @@ const LeaveRequest = require('../models/LeaveRequest');
 const Settings = require('../models/Settings');
 const { canSendEmailToUser } = require('../utils/canSendEmailToUser');
 const MediaLog = require('../models/MediaLog');
-const { PutObjectCommand } = require('@aws-sdk/client-s3');
+const { PutObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const assetsS3Client = require('../config/assetsS3Client');
+const s3Client = require('../config/s3');
 
 // ==========================================
 // 1. CREATE ADMIN (SuperAdmin Only)
@@ -1971,10 +1972,44 @@ adminRouter.put('/media/:logId/grade/:fileId', userAuth, adminAuth, async (req, 
 adminRouter.delete('/media/:logId/file/:fileId', userAuth, adminAuth, async (req, res) => {
     try {
         const { logId, fileId } = req.params;
-        const mediaLog = await MediaLog.findById(logId).populate('teacher', 'name email _id').populate('school', 'schoolName');
+        const mediaLog = await MediaLog.findById(logId)
+            .populate('teacher', 'name email _id')
+            .populate('school', 'schoolName');
 
         if (!mediaLog) return res.status(404).json({ success: false, message: "Media not found." });
 
+        // 1. Find the specific file in the array to get its URL BEFORE pulling it
+        const fileToDelete = mediaLog.files.id(fileId);
+
+        if (fileToDelete && fileToDelete.url) {
+            // 2. Physical Deletion from Cloudflare R2
+            try {
+                let fileKey = "";
+
+                // Safely extract the key by stripping the base public URL
+                if (fileToDelete.url.startsWith(process.env.R2_PUBLIC_URL)) {
+                    fileKey = fileToDelete.url.replace(process.env.R2_PUBLIC_URL, '');
+                    if (fileKey.startsWith('/')) {
+                        fileKey = fileKey.substring(1);
+                    }
+                } else {
+                    const urlObj = new URL(fileToDelete.url);
+                    fileKey = urlObj.pathname.substring(1);
+                }
+
+                // CRITICAL FIX: Decode the URL so spaces aren't passed as %20
+                fileKey = decodeURIComponent(fileKey);
+
+                await s3Client.send(new DeleteObjectCommand({
+                    Bucket: process.env.R2_BUCKET_NAME,
+                    Key: fileKey
+                }));
+            } catch (r2Error) {
+                console.error("Failed to delete from R2, but continuing DB cleanup:", r2Error);
+            }
+        }
+
+        // 3. Remove from MongoDB
         mediaLog.files.pull(fileId);
 
         if (mediaLog.files.length === 0) {
@@ -1983,8 +2018,8 @@ adminRouter.delete('/media/:logId/file/:fileId', userAuth, adminAuth, async (req
             await mediaLog.save();
         }
 
+        // 4. Real-time updates & Notifications
         if (req.io) {
-            // 🔥 NEW: Send the exact ID of the deleted file
             req.io.emit('media_deleted_direct', {
                 userId: mediaLog.teacher._id.toString(),
                 fileId: fileId
@@ -2068,12 +2103,41 @@ adminRouter.put('/profile-picture/confirm', userAuth, adminAuth, async (req, res
 // ==========================================
 adminRouter.delete('/profile-picture', userAuth, adminAuth, async (req, res) => {
     try {
-        // Remove the profile picture from the user's document
+        // 1. Check if the user actually has a profile picture to delete
+        if (!req.user.profilePicture) {
+            return res.status(400).json({ success: false, message: "No profile picture found." });
+        }
+
+        // 2. Delete the physical file from Cloudflare R2
+        try {
+            let fileKey = "";
+
+            // Safely extract the key by stripping the base public URL
+            if (req.user.profilePicture.startsWith(process.env.R2_PUBLIC_URL)) {
+                fileKey = req.user.profilePicture.replace(process.env.R2_PUBLIC_URL, '');
+                if (fileKey.startsWith('/')) {
+                    fileKey = fileKey.substring(1);
+                }
+            } else {
+                // Fallback for edge cases
+                const urlObj = new URL(req.user.profilePicture);
+                fileKey = urlObj.pathname.substring(1);
+            }
+
+            // CRITICAL FIX: Decode the URL so spaces aren't passed as %20
+            fileKey = decodeURIComponent(fileKey);
+
+            await s3Client.send(new DeleteObjectCommand({
+                Bucket: process.env.R2_BUCKET_NAME,
+                Key: fileKey
+            }));
+        } catch (r2Error) {
+            console.error("Failed to delete avatar from R2, but continuing DB cleanup:", r2Error);
+        }
+
+        // 3. Remove the profile picture from the user's document in MongoDB
         req.user.profilePicture = null;
         await req.user.save();
-
-        // Note: If you want to delete the actual file from your S3 bucket to save space, 
-        // you would add your AWS DeleteObjectCommand logic here too.
 
         res.json({ success: true, message: "Profile picture removed successfully" });
     } catch (error) {

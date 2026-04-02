@@ -7,22 +7,22 @@ const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 
 // Models
 const LearningMedia = require('../models/LearningMedia');
-const User = require('../models/User'); // IMPORT USER MODEL
-const Notification = require('../models/Notification'); // IMPORT NOTIFICATION MODEL
+const User = require('../models/User');
+const Notification = require('../models/Notification');
 
 // Middleware & Config
 const userAuth = require('../middleware/userAuth');
 const adminAuth = require('../middleware/adminAuth');
 const s3Client = require('../config/s3');
 
-// Email Services (Adjust path if needed)
+// Email Services
 const {
     sendNewLearningVideoEmailToEmployee,
     canSendEmailToUser
 } = require('../utils/emailService');
 
 // ==========================================
-// 1. GET ALL LEARNING VIDEOS (For Everyone)
+// 1. GET ALL LEARNING VIDEOS
 // ==========================================
 LearningRouter.get('/', userAuth, async (req, res) => {
     try {
@@ -35,7 +35,7 @@ LearningRouter.get('/', userAuth, async (req, res) => {
 });
 
 // ==========================================
-// 2. GENERATE PRESIGNED URL (Admins Only)
+// 2. GENERATE PRESIGNED URL
 // ==========================================
 LearningRouter.post('/presign', userAuth, adminAuth, async (req, res) => {
     try {
@@ -47,8 +47,6 @@ LearningRouter.post('/presign', userAuth, adminAuth, async (req, res) => {
 
         const ext = path.extname(fileName) || '.mp4';
         const uniqueId = crypto.randomBytes(4).toString('hex');
-
-        // Save in a dedicated folder in your Cloudflare R2 bucket
         const fileKey = `learning-hub/${Date.now()}-${uniqueId}${ext}`;
 
         const command = new PutObjectCommand({
@@ -57,7 +55,6 @@ LearningRouter.post('/presign', userAuth, adminAuth, async (req, res) => {
             ContentType: fileType,
         });
 
-        // Generate URL valid for 1 hour
         const signedUrl = await getSignedUrl(s3Client, command, { expiresIn: 3600 });
         const publicUrl = `${process.env.R2_PUBLIC_URL}/${fileKey}`;
 
@@ -69,46 +66,64 @@ LearningRouter.post('/presign', userAuth, adminAuth, async (req, res) => {
 });
 
 // ==========================================
-// 3. SAVE MEDIA TO DATABASE & NOTIFY (Admins Only)
+// 3. SAVE MEDIA TO DATABASE & NOTIFY (Handles Multi-Uploads)
 // ==========================================
 LearningRouter.post('/', userAuth, adminAuth, async (req, res) => {
     try {
-        const { title, description, fileUrl } = req.body;
+        const { title, description, fileUrl, fileUrls } = req.body;
 
-        if (!title || !fileUrl) {
-            return res.status(400).json({ success: false, message: "Title and Video URL are required." });
+        // Support both single upload (fileUrl) and multi-upload (fileUrls array)
+        const urlsToProcess = fileUrls && fileUrls.length > 0 ? fileUrls : (fileUrl ? [fileUrl] : []);
+
+        if (!title || urlsToProcess.length === 0) {
+            return res.status(400).json({ success: false, message: "Title and at least one Video URL are required." });
         }
 
-        const newVideo = await LearningMedia.create({
-            title,
-            description,
-            fileUrl,
-            uploader: req.user._id,
-            uploaderName: req.user.name,
-            uploaderRole: req.user.role
+        const createdVideos = [];
+
+        // Save all videos to the DB
+        for (let i = 0; i < urlsToProcess.length; i++) {
+            // Append part numbers if multiple videos are under the same title
+            const finalTitle = urlsToProcess.length > 1 ? `${title} (Part ${i + 1})` : title;
+
+            const newVideo = await LearningMedia.create({
+                title: finalTitle,
+                description,
+                fileUrl: urlsToProcess[i],
+                uploader: req.user._id,
+                uploaderName: req.user.name,
+                uploaderRole: req.user.role
+            });
+
+            createdVideos.push(newVideo);
+
+            // Broadcast individually or map them on frontend
+            if (req.io) {
+                req.io.emit('learning_video_added', newVideo);
+            }
+        }
+
+        res.status(201).json({
+            success: true,
+            message: `${createdVideos.length} lesson(s) uploaded successfully!`,
+            data: createdVideos
         });
 
-        // Broadcast to all active users so their gallery updates instantly
-        if (req.io) {
-            req.io.emit('learning_video_added', newVideo);
-        }
-
-        res.status(201).json({ success: true, message: "Lesson uploaded successfully!", data: newVideo });
-
-        // --- BACKGROUND TASK ---
+        // --- BACKGROUND TASK (Grouped notifications) ---
         (async () => {
             try {
-                // 1. Fetch everyone except the uploader
                 const usersToNotify = await User.find({
                     _id: { $ne: req.user._id },
                     isActive: true
                 });
 
-                const notifTitle = 'New Training Video';
-                const notifMessage = `${req.user.name} uploaded: "${title}".`;
+                const notifTitle = urlsToProcess.length > 1 ? 'New Training Videos' : 'New Training Video';
+                const notifMessage = urlsToProcess.length > 1
+                    ? `${req.user.name} uploaded ${urlsToProcess.length} videos under "${title}".`
+                    : `${req.user.name} uploaded: "${title}".`;
 
                 const notificationPromises = usersToNotify.map(async (targetUser) => {
-                    // 2. Create In-App Notification
+                    // Create one notification for the batch
                     const notif = await Notification.create({
                         recipient: targetUser._id,
                         title: notifTitle,
@@ -116,25 +131,23 @@ LearningRouter.post('/', userAuth, adminAuth, async (req, res) => {
                         type: 'Media'
                     });
 
-                    // 3. Socket Push
                     if (req.io) {
                         req.io.to(targetUser._id.toString()).emit('new_notification', notif);
                     }
 
-                    // 4. SMART EMAIL LOGIC
                     const prefs = targetUser.preferences?.type || targetUser.preferences || {};
                     const canSendEmployee = targetUser.role === 'Employee' && (prefs.globalEmployeeNotifications !== false);
                     const canSendAdmin = (targetUser.role === 'Admin' || targetUser.role === 'SuperAdmin') && (prefs.globalAdminNotifications !== false);
 
                     if (canSendEmployee || canSendAdmin) {
+                        // Send one email for the batch instead of 1 per video
                         const emailTask = sendNewLearningVideoEmailToEmployee(
                             targetUser.email,
                             targetUser.name,
                             req.user.name,
-                            title
+                            urlsToProcess.length > 1 ? `${title} (${urlsToProcess.length} parts)` : title
                         );
 
-                        // 10 second timeout per email to prevent hanging the event loop
                         const timeoutTask = new Promise((_, reject) =>
                             setTimeout(() => reject(new Error('SMTP Timeout')), 10000)
                         );
@@ -154,13 +167,13 @@ LearningRouter.post('/', userAuth, adminAuth, async (req, res) => {
     } catch (error) {
         console.error("Create Learning Media Error:", error);
         if (!res.headersSent) {
-            res.status(500).json({ success: false, message: "Failed to save the training video." });
+            res.status(500).json({ success: false, message: "Failed to save the training video(s)." });
         }
     }
 });
 
 // ==========================================
-// 4. DELETE LEARNING MEDIA (Admins Only)
+// 4. DELETE LEARNING MEDIA
 // ==========================================
 LearningRouter.delete('/:id', userAuth, adminAuth, async (req, res) => {
     try {
@@ -171,13 +184,23 @@ LearningRouter.delete('/:id', userAuth, adminAuth, async (req, res) => {
         }
 
         try {
-            const urlObj = new URL(video.fileUrl);
-            const fileKey = urlObj.pathname.substring(1);
+            let fileKey = "";
+
+            if (video.fileUrl.startsWith(process.env.R2_PUBLIC_URL)) {
+                fileKey = video.fileUrl.replace(process.env.R2_PUBLIC_URL, '');
+                if (fileKey.startsWith('/')) fileKey = fileKey.substring(1);
+            } else {
+                const urlObj = new URL(video.fileUrl);
+                fileKey = urlObj.pathname.substring(1);
+            }
+
+            fileKey = decodeURIComponent(fileKey);
 
             await s3Client.send(new DeleteObjectCommand({
                 Bucket: process.env.R2_BUCKET_NAME,
                 Key: fileKey
             }));
+
         } catch (r2Error) {
             console.error("Failed to delete from R2, but continuing DB cleanup:", r2Error);
         }
@@ -197,7 +220,7 @@ LearningRouter.delete('/:id', userAuth, adminAuth, async (req, res) => {
 });
 
 // ==========================================
-// 5. UPDATE LEARNING MEDIA (Admins Only)
+// 5. UPDATE LEARNING MEDIA
 // ==========================================
 LearningRouter.put('/:id', userAuth, adminAuth, async (req, res) => {
     try {
@@ -225,7 +248,7 @@ LearningRouter.put('/:id', userAuth, adminAuth, async (req, res) => {
 });
 
 // ==========================================
-// 6. GENERATE DOWNLOAD URL (For Everyone)
+// 6. GENERATE DOWNLOAD URL
 // ==========================================
 LearningRouter.post('/download', userAuth, async (req, res) => {
     try {

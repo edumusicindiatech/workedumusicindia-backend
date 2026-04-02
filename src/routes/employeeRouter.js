@@ -1317,8 +1317,22 @@ employeeRouter.delete("/media/file/:fileId", userAuth, async (req, res) => {
 
         // 4. Delete the physical file from Cloudflare R2 to save storage space
         try {
-            const urlObj = new URL(file.url);
-            const fileKey = urlObj.pathname.substring(1); // Removes the leading '/'
+            let fileKey = "";
+
+            // Safely extract the key by stripping the base public URL
+            if (file.url.startsWith(process.env.R2_PUBLIC_URL)) {
+                fileKey = file.url.replace(process.env.R2_PUBLIC_URL, '');
+                if (fileKey.startsWith('/')) {
+                    fileKey = fileKey.substring(1);
+                }
+            } else {
+                // Fallback for edge cases
+                const urlObj = new URL(file.url);
+                fileKey = urlObj.pathname.substring(1);
+            }
+
+            // CRITICAL FIX: Decode the URL so spaces aren't passed as %20
+            fileKey = decodeURIComponent(fileKey);
 
             await s3Client.send(new DeleteObjectCommand({
                 Bucket: process.env.R2_BUCKET_NAME,
