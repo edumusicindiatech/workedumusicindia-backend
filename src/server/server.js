@@ -18,6 +18,7 @@ const startAutoAbsentCron = require('../jobs/autoAbsentCron');
 const startCheckoutReminderCron = require('../jobs/checkoutReminderCron');
 const startKeepAliveCron = require('../jobs/keepAliveCron');
 const startWeeklyScoreCron = require('../jobs/weeklyScoreCron');
+const LearningRouter = require('../routes/LearningRouter');
 
 const app = express();
 const server = http.createServer(app);
@@ -76,6 +77,7 @@ app.use('/api/admin/notifications', notificationRouter);
 app.use('/api/employee/notifications', notificationRouter);
 app.use('/api/admin/communication', communicationRouter);
 app.use('/api/admin/progress', progressRouter);
+app.use('/api/learning', LearningRouter);
 
 const PORT = process.env.PORT || 5000;
 
