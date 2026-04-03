@@ -1,12 +1,14 @@
 const mongoose = require('mongoose');
-const User = require('../models/User');
-const Attendance = require('../models/Attendance');
-const LeaveRequest = require('../models/LeaveRequest');
+const User = require('../models/User'); // Adjust path if necessary
+const Attendance = require('../models/Attendance'); // Adjust path if necessary
+const LeaveRequest = require('../models/LeaveRequest'); // Adjust path if necessary
 
 const fetchDailyFeedData = async (status) => {
     const today = new Date();
     const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     const currentDayName = days[today.getDay()];
+
+    // Intentionally using UTC so the "next day" doesn't trigger until 5:30 AM IST
     const dateString = today.toISOString().split('T')[0];
 
     // ==========================================
@@ -29,7 +31,6 @@ const fetchDailyFeedData = async (status) => {
     // 2. FETCH CORE DATA
     // ==========================================
     const actualAttendance = await Attendance.find({ date: dateString })
-        // 👇 UPDATE 1: Added 'profilePicture' to the populate string
         .populate('teacher', 'name employeeId zone mobile profilePicture')
         .populate('school', 'schoolName address');
 
@@ -40,7 +41,7 @@ const fetchDailyFeedData = async (status) => {
     }).populate('assignments.school', 'schoolName address');
 
     // ==========================================
-    // 3. THE MERGING ENGINE
+    // 3. THE MERGING ENGINE (With Future-Bleed Fix)
     // ==========================================
     let combinedFeed = [...actualAttendance];
 
@@ -52,7 +53,22 @@ const fetchDailyFeedData = async (status) => {
         user.assignments.forEach(assign => {
             if (!assign.school || !assign.school._id) return;
 
-            if (assign.allowedDays.includes(currentDayName)) {
+            // --- DATE ISOLATION LOGIC ---
+            // 1. Find the assignment's start date (fallback to creation date if startDate is missing)
+            const assignmentStartDate = assign.startDate ? new Date(assign.startDate) : assign._id.getTimestamp();
+
+            // Normalize both dates to midnight so we strictly compare calendar days
+            const normalizedAssignmentDate = new Date(assignmentStartDate);
+            normalizedAssignmentDate.setHours(0, 0, 0, 0);
+
+            const normalizedToday = new Date(today);
+            normalizedToday.setHours(0, 0, 0, 0);
+
+            // 2. Check if today is ON or AFTER the assigned date
+            const isAfterAssignedDate = normalizedToday >= normalizedAssignmentDate;
+
+            // 3. Only show pending IF the assigned date has arrived AND it's the correct day of the week
+            if (isAfterAssignedDate && assign.allowedDays.includes(currentDayName)) {
 
                 const hasStarted = actualAttendance.find(a =>
                     a.teacher && a.teacher._id &&
@@ -70,7 +86,6 @@ const fetchDailyFeedData = async (status) => {
                             name: user.name,
                             zone: user.zone,
                             employeeId: user.employeeId,
-                            // 👇 UPDATE 2: Pass the profile picture to the virtual card
                             profilePicture: user.profilePicture
                         },
                         school: assign.school,
