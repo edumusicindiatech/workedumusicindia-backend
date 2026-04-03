@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 // 1. Define the File Sub-Schema (Grading happens here!)
 const fileSchema = new mongoose.Schema({
     url: { type: String, required: true },
+    thumbnailUrl: { type: String, default: null },
     fileType: { type: String, default: 'video' },
 
     // Admin Review Fields (Specific to THIS video)
