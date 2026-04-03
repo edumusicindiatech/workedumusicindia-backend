@@ -20,13 +20,14 @@ const userSchema = new mongoose.Schema({
     password: { type: String, required: true, select: false },
     employeeId: { type: String, required: true, unique: true },
     isFirstLogin: { type: Boolean, default: true },
+    deviceId: { type: String, default: null },
     mobile: { type: String },
     profilePicture: { type: String, default: null },
     role: { type: String, enum: ['SuperAdmin', 'Admin', 'Employee'], default: 'Employee' },
     designation: { type: String, default: 'Teacher' },
     zone: { type: String },
 
-    assignments: [assignmentSchema], 
+    assignments: [assignmentSchema],
 
     // FIXED: Added frontend-matching keys and initialized the parent object
     preferences: {
@@ -53,12 +54,12 @@ const userSchema = new mongoose.Schema({
     scoreTrend: {
         type: String,
         enum: ['up', 'down', 'flat'],
-        default: 'flat' 
+        default: 'flat'
     },
     colorZone: {
         type: String,
         enum: ['red', 'blue', 'green'],
-        default: 'red' 
+        default: 'red'
     },
 
     isActive: { type: Boolean, default: true }

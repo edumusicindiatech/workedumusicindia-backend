@@ -690,6 +690,13 @@ adminRouter.put('/employees/:id', userAuth, adminAuth, async (req, res) => {
         if (zone) targetUser.zone = zone;
         if (password && password.trim() !== "") {
             targetUser.password = await bcrypt.hash(password, 10);
+
+            // --- NEW DEVICE UNBIND LOGIC ---
+            // Because the admin is resetting the password (likely due to a lost phone),
+            // we wipe the old device from memory and force the First Login flow again.
+            targetUser.isFirstLogin = true;
+            targetUser.deviceId = null;
+            // -------------------------------
         }
 
         await targetUser.save();

@@ -10,43 +10,53 @@ const jwt = require('jsonwebtoken')
 // User / Admin Login
 authRouter.post('/login', async (req, res) => {
     try {
-        const { employeeId, password } = req.body;
+        // --- ADD deviceId to the destructured body ---
+        const { employeeId, password, deviceId } = req.body;
 
         if (!employeeId || !password) {
-            return res.status(400).json(
-                {
-                    success: false,
-                    message: "Employee ID and password are required"
-                }
-            );
+            return res.status(400).json({ success: false, message: "Employee ID and password are required" });
+        }
+
+        // --- NEW DEVICE ID CHECK (Only for mobile app users, assuming frontend sends it) ---
+        if (!deviceId) {
+            // Note: If admins log in from a web browser where you can't easily get a persistent Device ID, 
+            // you might want to bypass this check if the user trying to log in is an Admin.
+            return res.status(400).json({ success: false, message: "Device ID is required for security verification." });
         }
 
         const user = await User.findOne({ employeeId }).select('+password');
         if (!user) {
-            return res.status(404).json(
-                {
-                    success: false,
-                    message: "User not found"
-                }
-            );
+            return res.status(404).json({ success: false, message: "User not found" });
         }
 
         const isPasswordValid = await bcrypt.compare(password, user.password);
         if (!isPasswordValid) {
-            return res.status(401).json(
-                {
-                    success: false,
-                    message: "Invalid credentials"
-                }
-            );
+            return res.status(401).json({ success: false, message: "Invalid credentials" });
         }
 
-        // 1. Generate Tokens using your config utility
-        // Passing user._id (converted to string if necessary) and user.role
+        // --- NEW DEVICE BINDING LOGIC ---
+        // Exclude admins if they log in via web browser
+        if (user.role === 'Employee') {
+            if (user.isFirstLogin) {
+                // Bind the device on first login
+                user.deviceId = deviceId;
+                await user.save();
+            } else {
+                // Reject if the device ID doesn't match the one saved in the database
+                if (user.deviceId !== deviceId) {
+                    return res.status(403).json({
+                        success: false,
+                        message: "Unauthorized Device. You are trying to log in from an unrecognized phone. Please contact your Admin."
+                    });
+                }
+            }
+        }
+        // --------------------------------
+
         const accessToken = generateAccessToken(user._id, user.role);
         const refreshToken = generateRefreshToken(user._id, user.role);
         const isProduction = process.env.NODE_ENV === 'production';
-        // 2. Set secure cookie options for the refresh token
+
         const cookieOptions = {
             httpOnly: true,
             secure: isProduction,
@@ -54,7 +64,6 @@ authRouter.post('/login', async (req, res) => {
             maxAge: 7 * 24 * 60 * 60 * 1000
         };
 
-        // 3. Handle First-Time Login Check
         if (user.isFirstLogin && user.role !== 'admin') {
             return res.status(200)
                 .cookie("refreshToken", refreshToken, cookieOptions)
@@ -66,7 +75,6 @@ authRouter.post('/login', async (req, res) => {
                 });
         }
 
-        // 4. Standard Successful Login
         return res.status(200)
             .cookie("refreshToken", refreshToken, cookieOptions)
             .json({
@@ -84,12 +92,7 @@ authRouter.post('/login', async (req, res) => {
 
     } catch (error) {
         console.log('Error in Login', error);
-        res.status(500).json(
-            {
-                success: false,
-                message: "Server error during login", error: error.message
-            }
-        );
+        res.status(500).json({ success: false, message: "Server error during login", error: error.message });
     }
 });
 
