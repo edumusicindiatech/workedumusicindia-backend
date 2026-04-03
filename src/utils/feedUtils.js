@@ -41,7 +41,7 @@ const fetchDailyFeedData = async (status) => {
     }).populate('assignments.school', 'schoolName address');
 
     // ==========================================
-    // 3. THE MERGING ENGINE (With Future-Bleed Fix)
+    // 3. THE MERGING ENGINE (With Start & End Date Fixes)
     // ==========================================
     let combinedFeed = [...actualAttendance];
 
@@ -54,21 +54,30 @@ const fetchDailyFeedData = async (status) => {
             if (!assign.school || !assign.school._id) return;
 
             // --- DATE ISOLATION LOGIC ---
-            // 1. Find the assignment's start date (fallback to creation date if startDate is missing)
-            const assignmentStartDate = assign.startDate ? new Date(assign.startDate) : assign._id.getTimestamp();
 
-            // Normalize both dates to midnight so we strictly compare calendar days
-            const normalizedAssignmentDate = new Date(assignmentStartDate);
-            normalizedAssignmentDate.setHours(0, 0, 0, 0);
+            // 1. Check Start Date
+            const assignmentStartDate = assign.startDate ? new Date(assign.startDate) : assign._id.getTimestamp();
+            const normalizedStartDate = new Date(assignmentStartDate);
+            normalizedStartDate.setHours(0, 0, 0, 0);
 
             const normalizedToday = new Date(today);
             normalizedToday.setHours(0, 0, 0, 0);
 
-            // 2. Check if today is ON or AFTER the assigned date
-            const isAfterAssignedDate = normalizedToday >= normalizedAssignmentDate;
+            const isAfterStartDate = normalizedToday >= normalizedStartDate;
 
-            // 3. Only show pending IF the assigned date has arrived AND it's the correct day of the week
-            if (isAfterAssignedDate && assign.allowedDays.includes(currentDayName)) {
+            // 2. Check End Date (If it exists)
+            let isBeforeEndDate = true; // Assume true if there is no end date
+            if (assign.endDate) {
+                const normalizedEndDate = new Date(assign.endDate);
+                normalizedEndDate.setHours(23, 59, 59, 999); // Set to the very last millisecond of the end date
+                isBeforeEndDate = normalizedToday <= normalizedEndDate;
+            }
+
+            // 3. Only show pending IF:
+            // - The start date has arrived (No future bleed)
+            // - The end date has NOT passed (No expired assignments)
+            // - It's the correct day of the week
+            if (isAfterStartDate && isBeforeEndDate && assign.allowedDays.includes(currentDayName)) {
 
                 const hasStarted = actualAttendance.find(a =>
                     a.teacher && a.teacher._id &&
