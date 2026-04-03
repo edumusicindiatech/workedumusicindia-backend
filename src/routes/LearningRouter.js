@@ -2,6 +2,9 @@ const express = require('express');
 const LearningRouter = express.Router();
 const crypto = require('crypto');
 const path = require('path');
+const fs = require('fs');
+const os = require('os');
+const ffmpeg = require('fluent-ffmpeg');
 const { PutObjectCommand, DeleteObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 
@@ -66,14 +69,15 @@ LearningRouter.post('/presign', userAuth, adminAuth, async (req, res) => {
 });
 
 // ==========================================
-// 3. SAVE MEDIA TO DATABASE & NOTIFY (Handles Multi-Uploads)
+// 3. SAVE MEDIA TO DATABASE & NOTIFY
 // ==========================================
 LearningRouter.post('/', userAuth, adminAuth, async (req, res) => {
     try {
-        const { title, description, fileUrl, fileUrls } = req.body;
+        // ADD thumbnails to your destructuring
+        const { title, description, fileUrl, fileUrls, thumbnails } = req.body;
 
-        // Support both single upload (fileUrl) and multi-upload (fileUrls array)
         const urlsToProcess = fileUrls && fileUrls.length > 0 ? fileUrls : (fileUrl ? [fileUrl] : []);
+        const thumbsToProcess = thumbnails && thumbnails.length > 0 ? thumbnails : [];
 
         if (!title || urlsToProcess.length === 0) {
             return res.status(400).json({ success: false, message: "Title and at least one Video URL are required." });
@@ -81,15 +85,45 @@ LearningRouter.post('/', userAuth, adminAuth, async (req, res) => {
 
         const createdVideos = [];
 
-        // Save all videos to the DB
+        // Save all videos to the DB and upload thumbnails
         for (let i = 0; i < urlsToProcess.length; i++) {
-            // Append part numbers if multiple videos are under the same title
+            const videoUrl = urlsToProcess[i];
             const finalTitle = urlsToProcess.length > 1 ? `${title} (Part ${i + 1})` : title;
+            let finalThumbnailUrl = "";
+
+            // --- INSTANT BASE64 THUMBNAIL UPLOAD ---
+            if (thumbsToProcess[i]) {
+                try {
+                    // 1. Strip the HTML prefix from the string
+                    const base64Data = thumbsToProcess[i].replace(/^data:image\/\w+;base64,/, "");
+
+                    // 2. Convert into a Node.js File Buffer
+                    const fileBuffer = Buffer.from(base64Data, 'base64');
+
+                    // 3. Create secure collision-proof filename
+                    const randomHash = crypto.randomBytes(3).toString('hex');
+                    const s3Key = `learning-thumbnails/thumb_${Date.now()}_${randomHash}.jpg`;
+
+                    // 4. Send directly to Cloudflare R2
+                    await s3Client.send(new PutObjectCommand({
+                        Bucket: process.env.R2_BUCKET_NAME,
+                        Key: s3Key,
+                        Body: fileBuffer,
+                        ContentType: 'image/jpeg'
+                    }));
+
+                    finalThumbnailUrl = `${process.env.R2_PUBLIC_URL}/${s3Key}`;
+                } catch (thumbError) {
+                    console.error(`Thumbnail upload failed for ${videoUrl}:`, thumbError);
+                }
+            }
+            // --- END THUMBNAIL LOGIC ---
 
             const newVideo = await LearningMedia.create({
                 title: finalTitle,
                 description,
-                fileUrl: urlsToProcess[i],
+                fileUrl: videoUrl,
+                thumbnailUrl: finalThumbnailUrl, // Saves perfectly to your DB!
                 uploader: req.user._id,
                 uploaderName: req.user.name,
                 uploaderRole: req.user.role
@@ -97,7 +131,6 @@ LearningRouter.post('/', userAuth, adminAuth, async (req, res) => {
 
             createdVideos.push(newVideo);
 
-            // Broadcast individually or map them on frontend
             if (req.io) {
                 req.io.emit('learning_video_added', newVideo);
             }
@@ -116,7 +149,7 @@ LearningRouter.post('/', userAuth, adminAuth, async (req, res) => {
                 const senderIdStr = req.user._id.toString();
 
                 const usersToNotify = await User.find({
-                    _id: { $ne: req.user._id }, // Mongoose attempts to cast here
+                    _id: { $ne: req.user._id },
                     isActive: true
                 });
 
@@ -126,7 +159,7 @@ LearningRouter.post('/', userAuth, adminAuth, async (req, res) => {
                     : `${req.user.name} uploaded: "${title}".`;
 
                 const notificationPromises = usersToNotify.map(async (targetUser) => {
-                    // 2. FOOLPROOF FALLBACK: Explicitly skip the uploader
+                    // FOOLPROOF FALLBACK: Explicitly skip the uploader
                     if (targetUser._id.toString() === senderIdStr) return null;
 
                     // Create one notification for the batch
@@ -189,6 +222,7 @@ LearningRouter.delete('/:id', userAuth, adminAuth, async (req, res) => {
             return res.status(404).json({ success: false, message: "Training video not found." });
         }
 
+        // Delete Video File from R2
         try {
             let fileKey = "";
 
@@ -206,6 +240,17 @@ LearningRouter.delete('/:id', userAuth, adminAuth, async (req, res) => {
                 Bucket: process.env.R2_BUCKET_NAME,
                 Key: fileKey
             }));
+
+            // Delete Thumbnail from R2 (if it exists)
+            if (video.thumbnailUrl && video.thumbnailUrl.startsWith(process.env.R2_PUBLIC_URL)) {
+                let thumbKey = video.thumbnailUrl.replace(process.env.R2_PUBLIC_URL, '');
+                if (thumbKey.startsWith('/')) thumbKey = thumbKey.substring(1);
+
+                await s3Client.send(new DeleteObjectCommand({
+                    Bucket: process.env.R2_BUCKET_NAME,
+                    Key: decodeURIComponent(thumbKey)
+                }));
+            }
 
         } catch (r2Error) {
             console.error("Failed to delete from R2, but continuing DB cleanup:", r2Error);
