@@ -1467,7 +1467,7 @@ adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
         let noShowCount = 0;
 
         todaysAttendance.forEach(record => {
-            if (['Present', 'Late', 'Checked Out', 'Event'].includes(record.status)) presentCount++;
+            if (['Present', 'Late', 'Event'].includes(record.status)) presentCount++;
             if (record.status === 'Absent') noShowCount++;
         });
 
@@ -1501,7 +1501,7 @@ adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
                 school: att.school?.schoolName || "Unknown School",
                 category: att.band || "General",
                 action: actionText,
-                time: new Date(displayTime).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+                time: new Date(displayTime).toLocaleTimeString('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' }),
                 timeAgo: diffMins < 1 ? "Just now" : diffMins < 60 ? `${diffMins}m ago` : `${Math.floor(diffMins / 60)}h ago`,
                 status: att.status,
                 sortTimestamp: att.updatedAt // Unifying sorting key
@@ -1526,7 +1526,7 @@ adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
                 leaveRange: `${new Date(leave.fromDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })} - ${new Date(leave.toDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}`,
                 category: "Leave Request",
                 action: actionText,
-                time: new Date(leave.updatedAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+                time: new Date(leave.updatedAt).toLocaleTimeString('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' }),
                 timeAgo: diffMins < 1 ? "Just now" : diffMins < 60 ? `${diffMins}m ago` : `${Math.floor(diffMins / 60)}h ago`,
                 status: leave.status === 'approved' ? 'Approved' : leave.status === 'rejected' ? 'Rejected' : 'Pending',
                 sortTimestamp: leave.updatedAt // Unifying sorting key
