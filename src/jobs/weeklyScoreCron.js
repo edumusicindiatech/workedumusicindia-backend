@@ -2,36 +2,17 @@ const cron = require('node-cron');
 const User = require('../models/User');
 const Attendance = require('../models/Attendance');
 const MediaLog = require('../models/MediaLog');
-const LeaveRequest = require('../models/LeaveRequest');
+const LeaveRequest = require('../models/LeaveRequest'); // <-- NOW PROPERLY UTILIZED
 const Warning = require('../models/Warning');
 const WeeklyProgress = require('../models/WeeklyProgress');
 const Notification = require('../models/Notification');
 const { sendWeeklyScoreToEmployee, sendTopPerformersToAdmin } = require('../utils/emailService');
 const { canSendEmailToUser } = require('../utils/canSendEmailToUser');
 
-// Helper function to calculate the score for a single employee
-const calculateScoreAndZone = (attendanceRecords, mediaLogs, warnings, previousScore) => {
+// Helper to calculate the score for a single employee (Now takes true Expected Days and Stats)
+const calculateScoreAndZone = (earnedAttendancePoints, expectedDays, stats, mediaLogs, warnings, previousScore) => {
+
     // 1. ATTENDANCE SCORE (Max 50 points)
-    let expectedDays = attendanceRecords.length;
-    let earnedAttendancePoints = 0;
-    let stats = { present: 0, late: 0, absent: 0, leaves: 0, warningsCount: warnings.length };
-
-    attendanceRecords.forEach(record => {
-        if (record.status === 'Present' || record.status === 'Event') {
-            earnedAttendancePoints += 1;
-            stats.present += 1;
-        } else if (record.status === 'Late') {
-            earnedAttendancePoints += 0.7; // Late gives 70% credit for the day
-            stats.late += 1;
-        } else if (record.status === 'Absent') {
-            stats.absent += 1;
-        } else if (record.status === 'Holiday' || record.status === 'ON LEAVE') {
-            // We do not penalize holidays or approved leaves, so we remove them from expected days
-            expectedDays -= 1;
-            if (record.status === 'ON LEAVE') stats.leaves += 1;
-        }
-    });
-
     let attendanceScore = 0;
     if (expectedDays > 0) {
         attendanceScore = (earnedAttendancePoints / expectedDays) * 50;
@@ -46,8 +27,8 @@ const calculateScoreAndZone = (attendanceRecords, mediaLogs, warnings, previousS
 
     mediaLogs.forEach(log => {
         log.files.forEach(file => {
-            if (file.marks !== null) { // Only count graded videos
-                totalMarks += file.marks; // Marks are out of 10
+            if (file.marks !== null && file.marks !== undefined) {
+                totalMarks += file.marks;
                 gradedMediaCount += 1;
             }
         });
@@ -56,17 +37,15 @@ const calculateScoreAndZone = (attendanceRecords, mediaLogs, warnings, previousS
     stats.averageMediaScore = gradedMediaCount > 0 ? (totalMarks / gradedMediaCount) : 0;
 
     if (gradedMediaCount > 0) {
-        // Example: If average is 8/10, they get (8/10) * 50 = 40 points
         mediaScore = (stats.averageMediaScore / 10) * 50;
     }
 
     // 3. WARNING PENALTIES (-10 per warning)
     const warningPenalty = warnings.length * 10;
+    stats.warningsCount = warnings.length;
 
     // 4. FINAL TALLY
     let finalScore = Math.round(attendanceScore + mediaScore - warningPenalty);
-
-    // Ensure score stays between 0 and 100
     if (finalScore > 100) finalScore = 100;
     if (finalScore < 0) finalScore = 0;
 
@@ -75,7 +54,7 @@ const calculateScoreAndZone = (attendanceRecords, mediaLogs, warnings, previousS
     if (finalScore >= 70) colorZone = 'green';
     else if (finalScore >= 50) colorZone = 'blue';
 
-    // 6. TREND ARROWS (Comparing to last week)
+    // 6. TREND ARROWS
     let scoreTrend = 'flat';
     if (finalScore > previousScore) scoreTrend = 'up';
     else if (finalScore < previousScore) scoreTrend = 'down';
@@ -107,8 +86,78 @@ const startWeeklyScoreCron = (io) => {
                 const mediaLogs = await MediaLog.find({ teacher: emp._id, createdAt: { $gte: lastSaturday, $lte: today } });
                 const warnings = await Warning.find({ teacher: emp._id, dateIssued: { $gte: lastSaturday, $lte: today } });
 
-                const { finalScore, colorZone, scoreTrend, stats } = calculateScoreAndZone(
-                    attendance, mediaLogs, warnings, emp.currentWeeklyScore
+                let expectedDays = 0;
+                let earnedAttendancePoints = 0;
+                let stats = { present: 0, late: 0, absent: 0, leaves: 0, warningsCount: 0, averageMediaScore: 0 };
+
+                // --- THE BULLETPROOF 7-DAY LOOP ---
+                // We check every single day of the past week to see what they were SUPPOSED to do.
+                for (let i = 1; i <= 7; i++) {
+                    const checkDate = new Date(lastSaturday);
+                    checkDate.setDate(lastSaturday.getDate() + i);
+
+                    const checkDateStr = checkDate.toISOString().split('T')[0];
+                    const dayName = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][checkDate.getDay()];
+
+                    // A. Was the employee on leave this day?
+                    const checkStart = new Date(checkDate).setHours(0, 0, 0, 0);
+                    const checkEnd = new Date(checkDate).setHours(23, 59, 59, 999);
+
+                    const isOnLeave = await LeaveRequest.findOne({
+                        employee: emp._id,
+                        status: 'approved',
+                        fromDate: { $lte: new Date(checkEnd) },
+                        toDate: { $gte: new Date(checkStart) }
+                    });
+
+                    if (isOnLeave) {
+                        stats.leaves += 1;
+                        continue; // Do not count this day towards expected shifts
+                    }
+
+                    // B. Were they expected to work? (Date Isolation Logic)
+                    let expectedToWork = false;
+                    if (emp.assignments && emp.assignments.length > 0) {
+                        for (const assign of emp.assignments) {
+                            if (assign.allowedDays.includes(dayName)) {
+                                const aStart = assign.startDate ? new Date(assign.startDate).setHours(0, 0, 0, 0) : 0;
+                                let aEnd = Infinity;
+                                if (assign.endDate) aEnd = new Date(assign.endDate).setHours(23, 59, 59, 999);
+
+                                if (checkDate.getTime() >= aStart && checkDate.getTime() <= aEnd) {
+                                    expectedToWork = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    // C. Tally their attendance for this expected day
+                    if (expectedToWork) {
+                        expectedDays += 1;
+                        const dailyAtt = attendance.find(rec => rec.date === checkDateStr);
+
+                        if (dailyAtt) {
+                            if (dailyAtt.status === 'Present' || dailyAtt.status === 'Event') {
+                                earnedAttendancePoints += 1;
+                                stats.present += 1;
+                            } else if (dailyAtt.status === 'Late') {
+                                earnedAttendancePoints += 0.7; // 70% credit
+                                stats.late += 1;
+                            } else if (dailyAtt.status === 'Absent') {
+                                stats.absent += 1;
+                            }
+                        } else {
+                            // If they were expected to work, but have NO record in the DB
+                            // (e.g., auto-absent cron failed), we strictly count them as absent!
+                            stats.absent += 1;
+                        }
+                    }
+                }
+                // ----------------------------------
+
+                const { finalScore, colorZone, scoreTrend } = calculateScoreAndZone(
+                    earnedAttendancePoints, expectedDays, stats, mediaLogs, warnings, emp.currentWeeklyScore
                 );
 
                 leaderboardData.push({
@@ -135,7 +184,7 @@ const startWeeklyScoreCron = (io) => {
                 const rank = i + 1;
                 const data = leaderboardData[i];
 
-                // Save to WeeklyProgress (Graph Vault) - SMART UPSERT
+                // Save to WeeklyProgress (Graph Vault)
                 await WeeklyProgress.findOneAndUpdate(
                     {
                         teacher: data.employee._id,
@@ -168,8 +217,6 @@ const startWeeklyScoreCron = (io) => {
                     level: data.colorZone === 'red' ? 'Warning' : 'Info'
                 });
 
-
-                // 🔥 FIX: Wrapped email in try/catch to prevent a single email crash from breaking the loop
                 try {
                     const shouldSendToEmployee = await canSendEmailToUser(data.employee);
                     if (shouldSendToEmployee) {
@@ -190,7 +237,6 @@ const startWeeklyScoreCron = (io) => {
                 const admins = await User.find({ role: { $in: ['Admin', 'SuperAdmin'] }, isActive: true });
 
                 for (const admin of admins) {
-                    // In-App Admin Notification
                     await Notification.create({
                         recipient: admin._id,
                         title: 'Weekly Scores Calculated',
@@ -199,7 +245,6 @@ const startWeeklyScoreCron = (io) => {
                         level: 'Info'
                     });
 
-                    // 🔥 FIX: Wrapped Admin email in try/catch as well
                     try {
                         const shouldSendToAdmin = await canSendEmailToUser(admin);
                         if (shouldSendToAdmin) {
@@ -222,4 +267,4 @@ const startWeeklyScoreCron = (io) => {
     });
 };
 
-module.exports = startWeeklyScoreCron; 
+module.exports = startWeeklyScoreCron;

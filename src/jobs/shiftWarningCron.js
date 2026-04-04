@@ -3,7 +3,9 @@ const cron = require('node-cron');
 const User = require('../models/User');
 const Attendance = require('../models/Attendance');
 const Notification = require('../models/Notification');
+const LeaveRequest = require('../models/LeaveRequest'); // <-- ADDED
 const { sendPreShiftWarningEmail } = require('../utils/emailService');
+const { canSendEmailToUser } = require('../utils/canSendEmailToUser'); // <-- ADDED for consistency
 
 // Helper to reliably get local time formatted as "08:00 AM" and "YYYY-MM-DD"
 const getTimeAndDateContext = (minutesToAdd = 0) => {
@@ -27,7 +29,8 @@ const getTimeAndDateContext = (minutesToAdd = 0) => {
     });
     const targetTimeStr = timeFormatter.format(d); // Outputs "08:00", "14:30", etc.
 
-    return { dateString, currentDayName, targetTimeStr };
+    // Return the actual Date object too so we can use it for Leave/Start/End checks
+    return { dateString, currentDayName, targetTimeStr, targetDateObj: d };
 };
 
 const startShiftWarningCron = (io) => {
@@ -35,7 +38,21 @@ const startShiftWarningCron = (io) => {
     cron.schedule('* * * * *', async () => {
         try {
             // 1. Look exactly 15 minutes into the future
-            const { dateString, currentDayName, targetTimeStr } = getTimeAndDateContext(15);
+            const { dateString, currentDayName, targetTimeStr, targetDateObj } = getTimeAndDateContext(15);
+
+            // --- SYNCED LEAVE CHECKER ---
+            const todayStart = new Date(targetDateObj);
+            todayStart.setHours(0, 0, 0, 0);
+            const todayEnd = new Date(targetDateObj);
+            todayEnd.setHours(23, 59, 59, 999);
+
+            const activeLeaves = await LeaveRequest.find({
+                status: 'approved',
+                fromDate: { $lte: todayEnd },
+                toDate: { $gte: todayStart }
+            });
+            const usersOnLeaveSet = new Set(activeLeaves.map(leave => leave.employee.toString()));
+            // ----------------------------
 
             // 2. High-Performance Query: Find ONLY users who have a shift starting at exactly this time today
             const employeesStartingSoon = await User.find({
@@ -53,11 +70,33 @@ const startShiftWarningCron = (io) => {
 
             // 3. Check each matching employee
             for (const employee of employeesStartingSoon) {
+
+                // --- EXCLUDE IF ON LEAVE ---
+                if (usersOnLeaveSet.has(employee._id.toString())) continue;
+
                 // Filter down to just the specific assignments starting at targetTimeStr
-                const upcomingAssignments = employee.assignments.filter(a =>
-                    a.allowedDays.includes(currentDayName) &&
-                    a.startTime === targetTimeStr
-                );
+                // AND ensure the Start/End dates are valid
+                const upcomingAssignments = employee.assignments.filter(a => {
+                    // Check Time and Day first (Fastest checks)
+                    if (!a.allowedDays.includes(currentDayName) || a.startTime !== targetTimeStr) return false;
+
+                    // --- SYNCED DATE ISOLATION LOGIC ---
+                    const assignmentStartDate = a.startDate ? new Date(a.startDate) : a._id.getTimestamp();
+                    const normalizedStartDate = new Date(assignmentStartDate);
+                    normalizedStartDate.setHours(0, 0, 0, 0);
+
+                    const isAfterStartDate = todayStart >= normalizedStartDate;
+
+                    let isBeforeEndDate = true;
+                    if (a.endDate) {
+                        const normalizedEndDate = new Date(a.endDate);
+                        normalizedEndDate.setHours(23, 59, 59, 999);
+                        isBeforeEndDate = todayStart <= normalizedEndDate;
+                    }
+
+                    // Only keep this assignment if it hasn't expired and isn't in the future
+                    return isAfterStartDate && isBeforeEndDate;
+                });
 
                 for (const assignment of upcomingAssignments) {
                     const schoolId = assignment.school._id.toString();
@@ -95,8 +134,8 @@ const startShiftWarningCron = (io) => {
                             });
                         }
 
-                        // C. Send Email
-                        if (employee.preferences?.employeeNotifications !== false) {
+                        // C. Send Email (Now using your synced Global/User preferences helper!)
+                        if (await canSendEmailToUser(employee)) {
                             await sendPreShiftWarningEmail(
                                 employee.email,
                                 employee.name,

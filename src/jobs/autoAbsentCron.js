@@ -2,7 +2,8 @@ const cron = require('node-cron');
 const User = require('../models/User');
 const Attendance = require('../models/Attendance');
 const Notification = require('../models/Notification');
-const LeaveRequest = require('../models/LeaveRequest'); // <-- 1. ADDED IMPORT
+const LeaveRequest = require('../models/LeaveRequest');
+const { canSendEmailToUser } = require('../utils/canSendEmailToUser'); // <-- ADDED Helper
 const {
     sendEmployeeAutoAbsentWarning,
     sendEmployeeAutoAbsentAlert,
@@ -22,7 +23,8 @@ const getTimeAndDateContext = (minutesToSubtract = 0) => {
     const timeFormatter = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false });
     const targetTimeStr = timeFormatter.format(d);
 
-    return { dateString, currentDayName, targetTimeStr };
+    // Return the Date object too for start/end date logic
+    return { dateString, currentDayName, targetTimeStr, targetDateObj: d };
 };
 
 const sendInAppNotification = async (io, userId, title, message, type) => {
@@ -40,16 +42,30 @@ const startAutoAbsentCron = (io) => {
             const warningContext = getTimeAndDateContext(105);
             const absentContext = getTimeAndDateContext(120);
 
-            // --- DEBUG LOGS: SEE WHAT THE SERVER IS ACTUALLY SEARCHING FOR ---
             console.log(`[Cron tick] Checking auto-absent...`);
             console.log(` -> 15-Min Warning searching for: Day: ${warningContext.currentDayName}, Time: ${warningContext.targetTimeStr}`);
             console.log(` -> Auto-Absent execution searching for: Day: ${absentContext.currentDayName}, Time: ${absentContext.targetTimeStr}`);
+
+            // --- SYNCED LEAVE CHECKER (Fetch ONCE per tick) ---
+            const todayStart = new Date();
+            todayStart.setHours(0, 0, 0, 0);
+            const todayEnd = new Date();
+            todayEnd.setHours(23, 59, 59, 999);
+
+            const activeLeaves = await LeaveRequest.find({
+                status: 'approved',
+                fromDate: { $lte: todayEnd },
+                toDate: { $gte: todayStart }
+            });
+            const usersOnLeaveSet = new Set(activeLeaves.map(leave => leave.employee.toString()));
+            // ---------------------------------------------------
 
             // ==========================================
             // PHASE 1: 15-MINUTE WARNING
             // ==========================================
             const warningEmployees = await User.find({
                 role: 'Employee',
+                isActive: true,
                 assignments: { $elemMatch: { allowedDays: warningContext.currentDayName, startTime: warningContext.targetTimeStr } }
             }).populate('assignments.school');
 
@@ -58,26 +74,32 @@ const startAutoAbsentCron = (io) => {
             }
 
             for (const employee of warningEmployees) {
-                // <-- 2. ADDED LEAVE CHECK (WARNING) -->
-                // Construct a Date object from the current dateString (e.g., "2026-03-26")
-                const todayCheck = new Date(warningContext.dateString);
-
-                const isOnLeave = await LeaveRequest.findOne({
-                    employee: employee._id,
-                    status: 'approved',
-                    fromDate: { $lte: todayCheck },
-                    toDate: { $gte: todayCheck }
-                });
-
-                if (isOnLeave) {
+                // <-- LEAVE CHECK -->
+                if (usersOnLeaveSet.has(employee._id.toString())) {
                     console.log(` -> Skipping warning: ${employee.name} is on approved leave.`);
-                    continue; // Skip processing this employee entirely
+                    continue;
                 }
-                // <------------------------------------>
 
-                const pendingAssignments = employee.assignments.filter(a =>
-                    a.allowedDays.includes(warningContext.currentDayName) && a.startTime === warningContext.targetTimeStr
-                );
+                // Filter down to the specific shifts AND Apply Date Isolation Logic
+                const pendingAssignments = employee.assignments.filter(a => {
+                    if (!a.allowedDays.includes(warningContext.currentDayName) || a.startTime !== warningContext.targetTimeStr) return false;
+
+                    // --- DATE ISOLATION LOGIC ---
+                    const assignmentStartDate = a.startDate ? new Date(a.startDate) : a._id.getTimestamp();
+                    const normalizedStartDate = new Date(assignmentStartDate);
+                    normalizedStartDate.setHours(0, 0, 0, 0);
+
+                    const isAfterStartDate = todayStart >= normalizedStartDate;
+
+                    let isBeforeEndDate = true;
+                    if (a.endDate) {
+                        const normalizedEndDate = new Date(a.endDate);
+                        normalizedEndDate.setHours(23, 59, 59, 999);
+                        isBeforeEndDate = todayStart <= normalizedEndDate;
+                    }
+
+                    return isAfterStartDate && isBeforeEndDate;
+                });
 
                 for (const assignment of pendingAssignments) {
                     const hasCheckedIn = await Attendance.findOne({
@@ -89,7 +111,7 @@ const startAutoAbsentCron = (io) => {
                         const msg = `CRITICAL: You are 1 hour and 45 mins late for ${assignment.school.schoolName}. You will be auto-marked absent in 15 mins.`;
                         await sendInAppNotification(io, employee._id, "Auto-Absent Warning", msg, "Warning");
 
-                        if (employee.preferences?.employeeNotifications !== false) {
+                        if (await canSendEmailToUser(employee)) {
                             await sendEmployeeAutoAbsentWarning(employee.email, employee.name, assignment.school.schoolName, assignment.category, warningContext.targetTimeStr);
                         }
                     } else {
@@ -103,6 +125,7 @@ const startAutoAbsentCron = (io) => {
             // ==========================================
             const absentEmployees = await User.find({
                 role: 'Employee',
+                isActive: true,
                 assignments: { $elemMatch: { allowedDays: absentContext.currentDayName, startTime: absentContext.targetTimeStr } }
             }).populate('assignments.school');
 
@@ -111,25 +134,32 @@ const startAutoAbsentCron = (io) => {
                 const admins = await User.find({ role: { $in: ['Admin', 'SuperAdmin'] } });
 
                 for (const employee of absentEmployees) {
-                    // <-- 3. ADDED LEAVE CHECK (ABSENT) -->
-                    const todayCheck = new Date(absentContext.dateString);
-
-                    const isOnLeave = await LeaveRequest.findOne({
-                        employee: employee._id,
-                        status: 'approved',
-                        fromDate: { $lte: todayCheck },
-                        toDate: { $gte: todayCheck }
-                    });
-
-                    if (isOnLeave) {
+                    // <-- LEAVE CHECK -->
+                    if (usersOnLeaveSet.has(employee._id.toString())) {
                         console.log(` -> Skipping auto-absent: ${employee.name} is on approved leave.`);
-                        continue; // Skip processing this employee entirely
+                        continue;
                     }
-                    // <------------------------------------>
 
-                    const missedAssignments = employee.assignments.filter(a =>
-                        a.allowedDays.includes(absentContext.currentDayName) && a.startTime === absentContext.targetTimeStr
-                    );
+                    // Filter down to the specific shifts AND Apply Date Isolation Logic
+                    const missedAssignments = employee.assignments.filter(a => {
+                        if (!a.allowedDays.includes(absentContext.currentDayName) || a.startTime !== absentContext.targetTimeStr) return false;
+
+                        // --- DATE ISOLATION LOGIC ---
+                        const assignmentStartDate = a.startDate ? new Date(a.startDate) : a._id.getTimestamp();
+                        const normalizedStartDate = new Date(assignmentStartDate);
+                        normalizedStartDate.setHours(0, 0, 0, 0);
+
+                        const isAfterStartDate = todayStart >= normalizedStartDate;
+
+                        let isBeforeEndDate = true;
+                        if (a.endDate) {
+                            const normalizedEndDate = new Date(a.endDate);
+                            normalizedEndDate.setHours(23, 59, 59, 999);
+                            isBeforeEndDate = todayStart <= normalizedEndDate;
+                        }
+
+                        return isAfterStartDate && isBeforeEndDate;
+                    });
 
                     for (const assignment of missedAssignments) {
                         const hasCheckedIn = await Attendance.findOne({
@@ -153,12 +183,14 @@ const startAutoAbsentCron = (io) => {
                                     type: "SCHEDULE_UPDATE",
                                     message: `You have been automatically marked absent for ${assignment.school.schoolName}.`
                                 });
+                                // Also trigger a live feed refresh for admins
+                                io.emit('operations_update', { type: 'refresh_feed' });
                             }
 
                             const empMsg = `You have been automatically marked absent for your shift at ${assignment.school.schoolName}.`;
                             await sendInAppNotification(io, employee._id, "Shift Marked Absent", empMsg, "Warning");
 
-                            if (employee.preferences?.employeeNotifications !== false) {
+                            if (await canSendEmailToUser(employee)) {
                                 await sendEmployeeAutoAbsentAlert(employee.email, employee.name, assignment.school.schoolName, assignment.category, absentContext.targetTimeStr);
                             }
 
@@ -166,7 +198,7 @@ const startAutoAbsentCron = (io) => {
                             for (const admin of admins) {
                                 await sendInAppNotification(io, admin._id, "Auto-Absent Triggered", adminMsg, "System");
 
-                                if (admin.preferences?.adminNotifications !== false) {
+                                if (await canSendEmailToUser(admin)) {
                                     await sendAdminAutoAbsentAlert(admin.email, admin.name, employee.name, assignment.school.schoolName, assignment.category, absentContext.targetTimeStr);
                                 }
                             }

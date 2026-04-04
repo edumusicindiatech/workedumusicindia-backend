@@ -2,6 +2,8 @@ const cron = require('node-cron');
 const User = require('../models/User');
 const Attendance = require('../models/Attendance');
 const Notification = require('../models/Notification');
+const LeaveRequest = require('../models/LeaveRequest'); // <-- ADDED IMPORT
+const { canSendEmailToUser } = require('../utils/canSendEmailToUser'); // <-- ADDED HELPER
 const {
     sendEmployeeCheckoutReminder,
     sendAdminCheckoutAlert
@@ -20,7 +22,8 @@ const getTimeAndDateContext = (minutesToSubtract = 0) => {
     const timeFormatter = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false });
     const targetTimeStr = timeFormatter.format(d);
 
-    return { dateString, currentDayName, targetTimeStr };
+    // Return the Date object too for start/end date logic
+    return { dateString, currentDayName, targetTimeStr, targetDateObj: d };
 };
 
 const sendInAppNotification = async (io, userId, title, message, type) => {
@@ -35,14 +38,28 @@ const sendInAppNotification = async (io, userId, title, message, type) => {
 const startCheckoutReminderCron = (io) => {
     cron.schedule('* * * * *', async () => {
         try {
-            // We want to find shifts that ended exactly 10 minutes ago
+            // 1. Look for shifts that ended exactly 10 minutes ago
             const context = getTimeAndDateContext(10);
-
             console.log(`[Cron tick] Checking overdues... -> Searching for EndTime: Day: ${context.currentDayName}, Time: ${context.targetTimeStr}`);
 
-            // Find employees who have a shift ending at this exact time today
+            // --- SYNCED LEAVE CHECKER ---
+            const todayStart = new Date(context.targetDateObj);
+            todayStart.setHours(0, 0, 0, 0);
+            const todayEnd = new Date(context.targetDateObj);
+            todayEnd.setHours(23, 59, 59, 999);
+
+            const activeLeaves = await LeaveRequest.find({
+                status: 'approved',
+                fromDate: { $lte: todayEnd },
+                toDate: { $gte: todayStart }
+            });
+            const usersOnLeaveSet = new Set(activeLeaves.map(leave => leave.employee.toString()));
+            // ----------------------------
+
+            // 2. Find employees who have a shift ending at this exact time today
             const overdueEmployees = await User.find({
                 role: 'Employee',
+                isActive: true,
                 assignments: { $elemMatch: { allowedDays: context.currentDayName, endTime: context.targetTimeStr } }
             }).populate('assignments.school');
 
@@ -52,10 +69,32 @@ const startCheckoutReminderCron = (io) => {
             const admins = await User.find({ role: { $in: ['Admin', 'SuperAdmin'] } });
 
             for (const employee of overdueEmployees) {
-                // Filter down to the specific assignments that ended 10 mins ago
-                const endedAssignments = employee.assignments.filter(a =>
-                    a.allowedDays.includes(context.currentDayName) && a.endTime === context.targetTimeStr
-                );
+                // <-- LEAVE CHECK -->
+                if (usersOnLeaveSet.has(employee._id.toString())) {
+                    console.log(` -> Skipping checkout reminder: ${employee.name} is on approved leave.`);
+                    continue;
+                }
+
+                // Filter down to the specific assignments that ended 10 mins ago AND apply Date Isolation
+                const endedAssignments = employee.assignments.filter(a => {
+                    if (!a.allowedDays.includes(context.currentDayName) || a.endTime !== context.targetTimeStr) return false;
+
+                    // --- DATE ISOLATION LOGIC ---
+                    const assignmentStartDate = a.startDate ? new Date(a.startDate) : a._id.getTimestamp();
+                    const normalizedStartDate = new Date(assignmentStartDate);
+                    normalizedStartDate.setHours(0, 0, 0, 0);
+
+                    const isAfterStartDate = todayStart >= normalizedStartDate;
+
+                    let isBeforeEndDate = true;
+                    if (a.endDate) {
+                        const normalizedEndDate = new Date(a.endDate);
+                        normalizedEndDate.setHours(23, 59, 59, 999);
+                        isBeforeEndDate = todayStart <= normalizedEndDate;
+                    }
+
+                    return isAfterStartDate && isBeforeEndDate;
+                });
 
                 for (const assignment of endedAssignments) {
                     // Check Attendance: Did they check in today, and is checkOutTime still null?
@@ -74,7 +113,7 @@ const startCheckoutReminderCron = (io) => {
                         const empMsg = `Reminder: Your shift at ${assignment.school.schoolName} ended 10 mins ago. Please check out if you are finished.`;
                         await sendInAppNotification(io, employee._id, "Check-Out Reminder", empMsg, "Warning");
 
-                        if (employee.preferences?.employeeNotifications !== false) {
+                        if (await canSendEmailToUser(employee)) {
                             await sendEmployeeCheckoutReminder(employee.email, employee.name, assignment.school.schoolName, assignment.category, context.targetTimeStr);
                         }
 
@@ -83,7 +122,7 @@ const startCheckoutReminderCron = (io) => {
                         for (const admin of admins) {
                             await sendInAppNotification(io, admin._id, "Overdue Check-Out", adminMsg, "System");
 
-                            if (admin.preferences?.adminNotifications !== false) {
+                            if (await canSendEmailToUser(admin)) {
                                 await sendAdminCheckoutAlert(admin.email, admin.name, employee.name, assignment.school.schoolName, assignment.category, context.targetTimeStr);
                             }
                         }
