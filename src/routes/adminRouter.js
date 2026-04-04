@@ -1373,24 +1373,57 @@ adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
         const employees = await User.find({ role: 'Employee', isActive: true });
         const totalEmployees = employees.length;
 
-        // 3. Count UNIQUE people on leave today
-        const uniqueEmployeesOnLeave = await LeaveRequest.distinct('employee', {
+        // 3. Count UNIQUE people on leave today (Refactored to be a Set for fast lookup)
+        const activeLeaves = await LeaveRequest.find({
             status: 'approved',
             fromDate: { $lte: todayEnd },
             toDate: { $gte: todayStart }
         });
+
+        // Map out just the employee IDs and remove duplicates
+        const uniqueEmployeesOnLeave = [...new Set(activeLeaves.map(leave => leave.employee.toString()))];
         const onLeaveToday = uniqueEmployeesOnLeave.length;
 
-        // 4. Calculate Expected Shifts
+        // Create a Set for instant O(1) lookups below
+        const usersOnLeaveSet = new Set(uniqueEmployeesOnLeave);
+
+        // 4. Calculate Expected Shifts (With Feed-Sync Logic)
+        const normalizedToday = new Date();
+        normalizedToday.setHours(0, 0, 0, 0);
+
         let expectedShifts = 0;
+
         employees.forEach(emp => {
-            if (emp.assignments?.length > 0) {
-                emp.assignments.forEach(assignment => {
-                    if (assignment.allowedDays.includes(currentDayName)) {
-                        expectedShifts++;
-                    }
-                });
-            }
+            if (!emp.assignments || emp.assignments.length === 0) return;
+
+            // --- LEAVE EXCLUSION LOGIC ---
+            // If the employee is on approved leave today, none of their shifts count as "Expected"
+            if (usersOnLeaveSet.has(emp._id.toString())) return;
+
+            emp.assignments.forEach(assign => {
+                if (!assign.school) return;
+
+                // --- DATE ISOLATION LOGIC ---
+                // 1. Check Start Date
+                const assignmentStartDate = assign.startDate ? new Date(assign.startDate) : assign._id.getTimestamp();
+                const normalizedStartDate = new Date(assignmentStartDate);
+                normalizedStartDate.setHours(0, 0, 0, 0);
+
+                const isAfterStartDate = normalizedToday >= normalizedStartDate;
+
+                // 2. Check End Date
+                let isBeforeEndDate = true;
+                if (assign.endDate) {
+                    const normalizedEndDate = new Date(assign.endDate);
+                    normalizedEndDate.setHours(23, 59, 59, 999);
+                    isBeforeEndDate = normalizedToday <= normalizedEndDate;
+                }
+
+                // 3. Increment expected shifts ONLY if all conditions are met
+                if (isAfterStartDate && isBeforeEndDate && assign.allowedDays.includes(currentDayName)) {
+                    expectedShifts++;
+                }
+            });
         });
 
         // 5. Fetch Today's Attendance (🔥 UPDATED POPULATE)
@@ -1477,6 +1510,7 @@ adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
         res.status(500).json({ success: false, message: "Error fetching dashboard data" });
     }
 });
+
 // ==========================================
 // 18. UPDATE ACCOUNT SETTINGS (NEW ROUTE)
 // ==========================================
