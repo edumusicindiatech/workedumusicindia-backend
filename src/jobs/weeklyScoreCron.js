@@ -197,7 +197,7 @@ const startWeeklyScoreCron = (io) => {
                         colorZone: data.colorZone,
                         stats: data.stats
                     },
-                    { upsert: true, new: true }
+                    { upsert: true, returnDocument: 'after' }
                 );
 
                 // Update User Profile
