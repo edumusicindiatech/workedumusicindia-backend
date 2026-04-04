@@ -215,18 +215,25 @@ adminRouter.get('/employees/:id', userAuth, adminAuth, async (req, res) => {
 });
 
 // ==========================================
-// 5. ASSIGN SCHOOL TO EMPLOYEE
+// 5. ASSIGN SCHOOL TO EMPLOYEE (UPDATED)
 // ==========================================
 adminRouter.post('/employees/:id/assign-school', userAuth, adminAuth, async (req, res) => {
     try {
         const { id } = req.params;
-        const { schoolName, schoolAddress, category, startDate, endDate, startTime, endTime, allowedDays, latitude, longitude } = req.body;
+        const {
+            schoolName,
+            schoolAddress,
+            category,
+            startDate,
+            endDate,
+            startTime,
+            endTime,
+            allowedDays,
+            latitude,
+            longitude
+        } = req.body;
 
-        // ==========================================
         // 1. STRICT INPUT VALIDATIONS
-        // ==========================================
-
-        // Check core required text/date fields
         if (!schoolName || !schoolAddress || !category || !startDate || !startTime || !endTime) {
             return res.status(400).json({
                 success: false,
@@ -234,7 +241,6 @@ adminRouter.post('/employees/:id/assign-school', userAuth, adminAuth, async (req
             });
         }
 
-        // Check if at least one working day is selected
         if (!Array.isArray(allowedDays) || allowedDays.length === 0) {
             return res.status(400).json({
                 success: false,
@@ -242,7 +248,6 @@ adminRouter.post('/employees/:id/assign-school', userAuth, adminAuth, async (req
             });
         }
 
-        // Check if coordinates exist
         if (latitude === undefined || longitude === undefined || latitude === '' || longitude === '') {
             return res.status(400).json({
                 success: false,
@@ -260,9 +265,7 @@ adminRouter.post('/employees/:id/assign-school', userAuth, adminAuth, async (req
             });
         }
 
-        // Check if coordinates are within India's approximate geographical bounding box
-        // Latitude roughly between 6.0°N and 38.0°N
-        // Longitude roughly between 68.0°E and 98.0°E
+        // India Bounding Box Check
         if (lat < 6.0 || lat > 38.0 || lng < 68.0 || lng > 98.0) {
             return res.status(400).json({
                 success: false,
@@ -275,14 +278,11 @@ adminRouter.post('/employees/:id/assign-school', userAuth, adminAuth, async (req
             return res.status(400).json({ success: false, message: "Invalid Start Date format." });
         }
 
-        // ==========================================
         // 2. EMPLOYEE & LEAVE CHECKS
-        // ==========================================
-
         const employee = await User.findById(id);
         if (!employee) return res.status(404).json({ success: false, message: "Employee not found." });
 
-        const checkEndDate = endDate ? new Date(endDate) : new Date("2099-12-31T23:59:59Z"); // If no end date, assume indefinite
+        const checkEndDate = endDate ? new Date(endDate) : new Date("2099-12-31T23:59:59Z");
 
         const overlappingLeave = await LeaveRequest.findOne({
             employee: employee._id,
@@ -294,21 +294,27 @@ adminRouter.post('/employees/:id/assign-school', userAuth, adminAuth, async (req
         if (overlappingLeave) {
             return res.status(400).json({
                 success: false,
-                message: `Cannot assign schedule. ${employee.name} is on an approved leave from ${new Date(overlappingLeave.fromDate).toDateString()} to ${new Date(overlappingLeave.toDate).toDateString()}.`
+                message: `Cannot assign schedule. ${employee.name} is on an approved leave.`
             });
         }
 
-        // ==========================================
-        // 3. SCHOOL CREATION / ASSIGNMENT
-        // ==========================================
+        // 3. SCHOOL CREATION / UPDATING (FIXED LOGIC)
+        // We find the school by name and update its address/coordinates to ensure precision
+        let school = await School.findOne({
+            schoolName: { $regex: new RegExp(`^${schoolName}$`, 'i') }
+        });
 
-        let school = await School.findOne({ schoolName: { $regex: new RegExp(`^${schoolName}$`, 'i') } });
         if (!school) {
             school = new School({
                 schoolName,
                 address: schoolAddress,
-                location: { type: 'Point', coordinates: [lng, lat] } // MongoDB requires Longitude first, then Latitude
+                location: { type: 'Point', coordinates: [lng, lat] }
             });
+            await school.save();
+        } else {
+            // Update existing school to use the new precise coordinates
+            school.address = schoolAddress;
+            school.location = { type: 'Point', coordinates: [lng, lat] };
             await school.save();
         }
 
@@ -326,12 +332,8 @@ adminRouter.post('/employees/:id/assign-school', userAuth, adminAuth, async (req
         employee.assignments.push(newAssignment);
         await employee.save();
 
-        // ==========================================
-        // 4. NOTIFICATIONS & EMAILS
-        // ==========================================
-
-        const empMsg = `You have been assigned to ${school.schoolName} for the ${category} shift starting ${startDate}.`;
-
+        // 4. NOTIFICATIONS
+        const empMsg = `You have been assigned to ${school.schoolName} for the ${category} shift.`;
 
         if (await canSendEmailToUser(employee)) {
             sendSchoolAssignmentEmail(employee.email, employee.name, school.schoolName, school.address, category, startDate, startTime)
@@ -354,19 +356,15 @@ adminRouter.post('/employees/:id/assign-school', userAuth, adminAuth, async (req
             });
         }
 
+        // Notify other admins
         const admins = await User.find({
-            role: { $in: ['Admin'] },
+            role: 'Admin',
             _id: { $ne: req.user._id }
         });
 
-        const adminMsg = `${employee.name} has been assigned to ${school.schoolName} (${category}).`;
+        const adminMsg = `${employee.name} assigned to ${school.schoolName} (${category}).`;
 
         await Promise.all(admins.map(async (admin) => {
-            if (await canSendEmailToUser(admin)) {
-                sendAdminAssignmentAlertEmail(admin.email, admin.name, employee.name, school.schoolName, school.address, category, startDate)
-                    .catch(e => console.error("Admin email failed", e));
-            }
-
             const adminNotification = await Notification.create({
                 recipient: admin._id,
                 title: "System Alert: Staff Assigned",
@@ -816,7 +814,7 @@ adminRouter.delete('/employees/:id', userAuth, adminAuth, async (req, res) => {
 });
 
 // ==========================================
-// 10. ASSIGN TASK TO EMPLOYEE
+// 10. ASSIGN TASK TO EMPLOYEE (UPDATED)
 // ==========================================
 adminRouter.post('/employees/:id/assign-task', userAuth, adminAuth, async (req, res) => {
     try {
@@ -843,17 +841,37 @@ adminRouter.post('/employees/:id/assign-task', userAuth, adminAuth, async (req, 
         }
         // ------------------------------------
 
+        // --- COORDINATE SAFETY CHECK ---
+        // Only parse them if they are actually provided to prevent [0,0] bugs
+        let lat = null;
+        let lng = null;
+        if (latitude && longitude) {
+            lat = parseFloat(latitude);
+            lng = parseFloat(longitude);
+        }
+
+        // --- SCHOOL CREATION OR UPDATE ---
         let school = await School.findOne({ schoolName: { $regex: new RegExp(`^${schoolName}$`, 'i') } });
+
         if (!school) {
+            // Create new if it doesn't exist (and ensure we have coordinates)
+            if (lat === null || lng === null) {
+                return res.status(400).json({ success: false, message: "Coordinates are required to create a new school." });
+            }
+
             school = new School({
                 schoolName,
                 address: schoolAddress || "No address provided",
-                location: {
-                    type: 'Point',
-                    coordinates: [parseFloat(longitude || 0), parseFloat(latitude || 0)]
-                }
+                location: { type: 'Point', coordinates: [lng, lat] }
             });
             await school.save();
+        } else {
+            // Update the existing school ONLY IF new coordinates were provided
+            if (lat !== null && lng !== null) {
+                school.location = { type: 'Point', coordinates: [lng, lat] };
+                if (schoolAddress) school.address = schoolAddress;
+                await school.save();
+            }
         }
 
         const newTask = await Task.create({
@@ -871,8 +889,6 @@ adminRouter.post('/employees/:id/assign-task', userAuth, adminAuth, async (req, 
 
         const taskTitle = `Assignment at ${school.schoolName}`;
         const scheduleString = `${daysAllotted.join(', ')} (${timing})`;
-
-
 
         if (await canSendEmailToUser(employee)) {
             sendEmployeeTaskAssignedEmail(employee.email, employee.name, taskTitle, taskDescription, scheduleString, category);
