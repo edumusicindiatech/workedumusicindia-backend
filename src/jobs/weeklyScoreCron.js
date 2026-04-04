@@ -17,7 +17,8 @@ const calculateScoreAndZone = (earnedAttendancePoints, expectedDays, stats, medi
     if (expectedDays > 0) {
         attendanceScore = (earnedAttendancePoints / expectedDays) * 50;
     } else {
-        attendanceScore = 50; // If they only had approved leaves/holidays, don't penalize their week
+        // FIXED: If they had 0 expected days to work, they earn 0 attendance points (instead of 50).
+        attendanceScore = 0;
     }
 
     // 2. MEDIA SCORE (Max 50 points)
