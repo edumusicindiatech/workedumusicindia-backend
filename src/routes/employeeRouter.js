@@ -253,7 +253,10 @@ employeeRouter.post('/check-out', userAuth, async (req, res) => {
         const school = await School.findOne({
             _id: schoolId,
             location: {
-                $nearSphere: { $geometry: { type: "Point", coordinates: [parseFloat(longitude), parseFloat(latitude)] }, $maxDistance: 100 }
+                $nearSphere: {
+                    $geometry: { type: "Point", coordinates: [parseFloat(longitude), parseFloat(latitude)] },
+                    $maxDistance: 100
+                }
             }
         });
 
@@ -264,16 +267,25 @@ employeeRouter.post('/check-out', userAuth, async (req, res) => {
 
         if (!record) return res.status(400).json({ success: false, message: "No active check-in found." });
 
+        // Update the record with check-out details
         record.checkOutTime = new Date();
         record.overtimeReason = overtimeReason || null;
         record.checkOutCoordinates = [longitude, latitude];
+        record.status = 'Checked Out'; // Changes the status for the dashboard
+
         await record.save();
 
         const checkOutTimeStr = new Date().toLocaleTimeString('en-US');
 
-        // Notify Admins
-        const admins = await notifyAdminsInApp(req, `Check-Out: ${employee.name}`, `${employee.name} checked out of ${school.schoolName}`, overtimeReason ? "Warning" : "System");
+        // 🚀 THE FIX: This helper alone handles the DB notification AND the single Socket.io ping!
+        const admins = await notifyAdminsInApp(
+            req,
+            `Check-Out: ${employee.name}`,
+            `${employee.name} checked out of ${school.schoolName}`,
+            overtimeReason ? "Warning" : "System"
+        );
 
+        // Just handle emails in this loop now, no socket emits here.
         for (const admin of admins) {
             if (await canSendEmailToUser(admin)) {
                 await sendAdminCheckOutAlert(
@@ -290,6 +302,7 @@ employeeRouter.post('/check-out', userAuth, async (req, res) => {
     }
 });
 
+
 // ==========================================
 // 6. MARK STATUS (Single School / Shift)
 // ==========================================
@@ -299,31 +312,20 @@ employeeRouter.post('/mark-status', userAuth, async (req, res) => {
         const employeeId = req.user._id;
 
         if (!schoolId || !band) {
-            return res.status(400).json({
-                success: false,
-                message: "schoolId and band are required."
-            });
+            return res.status(400).json({ success: false, message: "schoolId and band are required." });
         }
 
-        // Require reason for Absent or Holiday
         if (['absent', 'holiday'].includes(status.toLowerCase()) && (!reason || reason.trim() === '')) {
-            return res.status(400).json({
-                success: false,
-                message: "A reason is mandatory when marking Absent or Holiday."
-            });
+            return res.status(400).json({ success: false, message: "A reason is mandatory when marking Absent or Holiday." });
         }
 
-        // --- BACK TO YOUR ORIGINAL, RELIABLE METHOD ---
         const employee = await User.findById(employeeId);
         const school = await School.findById(schoolId);
 
-        if (!school) {
-            return res.status(404).json({ success: false, message: "School not found." });
-        }
+        if (!school) return res.status(404).json({ success: false, message: "School not found." });
 
         const dateString = new Date().toISOString().split('T')[0];
 
-        // 1. Prevent duplicate attendance records for the same shift
         const existingRecord = await Attendance.findOne({
             teacher: employeeId,
             school: schoolId,
@@ -332,13 +334,9 @@ employeeRouter.post('/mark-status', userAuth, async (req, res) => {
         });
 
         if (existingRecord) {
-            return res.status(400).json({
-                success: false,
-                message: "Attendance has already been marked for this shift today."
-            });
+            return res.status(400).json({ success: false, message: "Attendance has already been marked for this shift today." });
         }
 
-        // 2. Create the attendance record
         await Attendance.create({
             teacher: employeeId,
             school: schoolId,
@@ -348,18 +346,14 @@ employeeRouter.post('/mark-status', userAuth, async (req, res) => {
             teacherNote: reason || "Marked from Dashboard"
         });
 
-        // --- REAL-TIME SOCKET UPDATES START ---
         const io = req.io;
         if (io) {
             io.to(employeeId.toString()).emit("employee_schedule_refresh", {
                 type: "SCHEDULE_UPDATE",
                 message: `Shift at ${school.schoolName} marked as ${status}.`
             });
-            io.emit('operations_update', { type: 'refresh_feed' });
         }
-        // --- REAL-TIME SOCKET UPDATES END ---
 
-        // 3. Notify Admins (Using school.schoolName just like your old code)
         const admins = await notifyAdminsInApp(
             req,
             `${status} Alert: ${employee.name}`,
@@ -369,6 +363,7 @@ employeeRouter.post('/mark-status', userAuth, async (req, res) => {
 
         if (Array.isArray(admins)) {
             for (const admin of admins) {
+                // The manual io.to().emit has been removed here to fix the double badge!
                 if (await canSendEmailToUser(admin)) {
                     await sendAdminStatusAlert(
                         admin.email, admin.name, employee.name, school.schoolName, band, status, reason
@@ -392,23 +387,18 @@ employeeRouter.post('/mark-day-status', userAuth, async (req, res) => {
         const { status, reason } = req.body;
         const employeeId = req.user._id;
 
-        // Populate the assignments so we can grab the school details
         const employee = await User.findById(employeeId).populate('assignments.school');
 
-        // Mirroring your exact working date logic
         const dateString = new Date().toISOString().split('T')[0];
         const todayDayOfWeek = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date().getDay()];
 
-        // 1. Get today's assignments
         const todaysAssignments = employee.assignments.filter(a => a?.allowedDays?.includes(todayDayOfWeek));
 
-        // 2. Find shifts that already have an attendance record so we skip them
         const existingRecords = await Attendance.find({ teacher: employeeId, date: dateString });
         const existingKeys = existingRecords.map(r => `${r?.school?.toString()}-${r?.band}`);
 
         const recordsToCreate = [];
 
-        // 3. Prepare the exact same object structure as your working /mark-status route
         todaysAssignments.forEach(a => {
             if (!existingKeys.includes(`${a?.school?._id}-${a?.category}`)) {
                 recordsToCreate.push({
@@ -417,36 +407,32 @@ employeeRouter.post('/mark-day-status', userAuth, async (req, res) => {
                     band: a?.category,
                     date: dateString,
                     status: status,
-                    teacherNote: reason || "Marked from Dashboard" // Exact match to your working code
+                    teacherNote: reason || "Marked from Dashboard"
                 });
             }
         });
 
-        // 4. Create them all at once using insertMany (the bulk equivalent of .create)
         if (recordsToCreate.length > 0) {
             await Attendance.insertMany(recordsToCreate);
 
-            // --- REAL-TIME SOCKET UPDATES START ---
             const io = req.io;
             if (io) {
-                // Instantly refresh the employee's dashboard
                 io.to(employeeId.toString()).emit("employee_schedule_refresh", {
                     type: "SCHEDULE_UPDATE",
                     message: `All remaining shifts marked as ${status}.`
                 });
-                io.emit('operations_update', { type: 'refresh_feed' });
             }
-            // --- REAL-TIME SOCKET UPDATES END ---
 
-            // Notify Admins (Exact same logic as your working route)
-
-            const admins = await notifyAdminsInApp(req, `${status} Alert: ${employee.name}`, `${employee.name} marked full day ${status} for remaining schools`, "Warning");
+            const admins = await notifyAdminsInApp(
+                req,
+                `${status} Alert: ${employee.name}`,
+                `${employee.name} marked full day ${status} for remaining schools`,
+                "Warning"
+            );
 
             if (Array.isArray(admins)) {
                 for (const admin of admins) {
-                    // DELETED THE MANUAL "io.to(admin._id).emit" BLOCK HERE
-
-                    // ONLY keep the email alert logic in this loop
+                    // The manual io.to().emit has been removed here to fix the double badge!
                     if (await canSendEmailToUser(admin)) {
                         await sendAdminStatusAlert(admin.email, admin.name, employee.name, "All Remaining Schools", "N/A", status, reason);
                     }

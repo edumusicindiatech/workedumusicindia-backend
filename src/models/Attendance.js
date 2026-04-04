@@ -8,7 +8,7 @@ const attendanceSchema = new mongoose.Schema({
     date: { type: String, required: true }, // Format: "YYYY-MM-DD" for easy grouping
     status: {
         type: String,
-        enum: ['Present', 'Late', 'Absent', 'Holiday', 'Event'],
+        enum: ['Present', 'Late', 'Absent', 'Holiday', 'Event', 'Checked Out'],
         required: true
     },
 

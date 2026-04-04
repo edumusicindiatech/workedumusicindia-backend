@@ -1366,7 +1366,7 @@ adminRouter.get('/daily-feed', async (req, res) => {
 });
 
 // ==========================================
-// 17. GET Admin Dashboard
+// 17. GET Admin Dashboard (ULTIMATE REAL-TIME LOG)
 // ==========================================
 adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
     try {
@@ -1389,21 +1389,18 @@ adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
         const employees = await User.find({ role: 'Employee', isActive: true });
         const totalEmployees = employees.length;
 
-        // 3. Count UNIQUE people on leave today (Refactored to be a Set for fast lookup)
+        // 3. Count UNIQUE people on leave today
         const activeLeaves = await LeaveRequest.find({
             status: 'approved',
             fromDate: { $lte: todayEnd },
             toDate: { $gte: todayStart }
         });
 
-        // Map out just the employee IDs and remove duplicates
         const uniqueEmployeesOnLeave = [...new Set(activeLeaves.map(leave => leave.employee.toString()))];
         const onLeaveToday = uniqueEmployeesOnLeave.length;
-
-        // Create a Set for instant O(1) lookups below
         const usersOnLeaveSet = new Set(uniqueEmployeesOnLeave);
 
-        // 4. Calculate Expected Shifts (With Feed-Sync Logic)
+        // 4. Calculate Expected Shifts
         const normalizedToday = new Date();
         normalizedToday.setHours(0, 0, 0, 0);
 
@@ -1411,23 +1408,17 @@ adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
 
         employees.forEach(emp => {
             if (!emp.assignments || emp.assignments.length === 0) return;
-
-            // --- LEAVE EXCLUSION LOGIC ---
-            // If the employee is on approved leave today, none of their shifts count as "Expected"
-            if (usersOnLeaveSet.has(emp._id.toString())) return;
+            if (usersOnLeaveSet.has(emp._id.toString())) return; // Ignore if on leave
 
             emp.assignments.forEach(assign => {
                 if (!assign.school) return;
 
-                // --- DATE ISOLATION LOGIC ---
-                // 1. Check Start Date
                 const assignmentStartDate = assign.startDate ? new Date(assign.startDate) : assign._id.getTimestamp();
                 const normalizedStartDate = new Date(assignmentStartDate);
                 normalizedStartDate.setHours(0, 0, 0, 0);
 
                 const isAfterStartDate = normalizedToday >= normalizedStartDate;
 
-                // 2. Check End Date
                 let isBeforeEndDate = true;
                 if (assign.endDate) {
                     const normalizedEndDate = new Date(assign.endDate);
@@ -1435,75 +1426,105 @@ adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
                     isBeforeEndDate = normalizedToday <= normalizedEndDate;
                 }
 
-                // 3. Increment expected shifts ONLY if all conditions are met
                 if (isAfterStartDate && isBeforeEndDate && assign.allowedDays.includes(currentDayName)) {
                     expectedShifts++;
                 }
             });
         });
 
-        // 5. Fetch Today's Attendance (🔥 UPDATED POPULATE)
+        // ========================================================
+        // 5. Fetch Today's Attendance (SORTED BY UPDATED_AT)
+        // ========================================================
         const todaysAttendance = await Attendance.find({ date: dateString })
-            .populate('teacher', 'name zone profilePicture') // Added profilePicture
+            .populate('teacher', 'name zone profilePicture')
             .populate('school', 'schoolName address')
-            .sort({ createdAt: -1 });
+            .sort({ updatedAt: -1 }); // <--- CRITICAL FIX: Sorts by the latest action
 
-        // 6. Fetch Recent Leave Actions (🔥 UPDATED POPULATE)
+        // ========================================================
+        // 6. Fetch Recent Leave Actions (SORTED BY UPDATED_AT)
+        // ========================================================
         const recentLeaves = await LeaveRequest.find({
             updatedAt: { $gte: new Date(Date.now() - 48 * 60 * 60 * 1000) }
         })
-            .populate('employee', 'name zone profilePicture') // Added profilePicture
+            .populate('employee', 'name zone profilePicture')
             .sort({ updatedAt: -1 });
 
+        // Calculate Overview Stats
         let presentCount = 0;
         let noShowCount = 0;
 
         todaysAttendance.forEach(record => {
-            if (['Present', 'Late', 'Event'].includes(record.status)) presentCount++;
+            if (['Present', 'Late', 'Checked Out', 'Event'].includes(record.status)) presentCount++;
             if (record.status === 'Absent') noShowCount++;
         });
 
         const pendingCount = Math.max(0, expectedShifts - todaysAttendance.length);
 
-        // 7. Format Attendance (🔥 INCLUDED profilePicture)
+        // ========================================================
+        // 7. Format Attendance (DYNAMIC STATUS MAPPING)
+        // ========================================================
         const attendanceActivity = todaysAttendance.map(att => {
-            const diffMins = Math.round((new Date() - new Date(att.createdAt)) / 60000);
+            const diffMins = Math.round((new Date() - new Date(att.updatedAt)) / 60000);
+
+            // Map every single possible status to a readable action text
+            let actionText = "Status Updated";
+            if (att.status === 'Present') actionText = "Checked In";
+            if (att.status === 'Late') actionText = "Late Check-in";
+            if (att.status === 'Checked Out') actionText = "Checked Out";
+            if (att.status === 'Absent') actionText = "Marked Absent"; // Captures both Employee & Admin marking
+            if (att.status === 'Holiday') actionText = "Marked Holiday";
+            if (att.status === 'Event') actionText = "Added Event Note";
+
+            // Figure out which time to display based on the action
+            let displayTime = att.updatedAt;
+            if (att.status === 'Checked Out' && att.checkOutTime) displayTime = att.checkOutTime;
+            else if (att.status === 'Present' || att.status === 'Late') displayTime = att.checkInTime || att.updatedAt;
+
             return {
                 id: att._id,
                 name: att.teacher?.name || "Unknown Staff",
-                profilePicture: att.teacher?.profilePicture || null, // Pass it to frontend
+                profilePicture: att.teacher?.profilePicture || null,
                 zone: att.teacher?.zone || "N/A",
                 school: att.school?.schoolName || "Unknown School",
-                category: att.band,
-                action: att.status === 'Late' ? "Late Check-in" : att.status === 'Absent' ? "Marked Absent" : "Marked Present",
-                time: new Date(att.checkInTime || att.createdAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+                category: att.band || "General",
+                action: actionText,
+                time: new Date(displayTime).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
                 timeAgo: diffMins < 1 ? "Just now" : diffMins < 60 ? `${diffMins}m ago` : `${Math.floor(diffMins / 60)}h ago`,
                 status: att.status,
-                createdAt: att.createdAt
+                sortTimestamp: att.updatedAt // Unifying sorting key
             };
         });
 
-        // 8. Format Leave Actions (🔥 INCLUDED profilePicture)
+        // ========================================================
+        // 8. Format Leave Actions
+        // ========================================================
         const leaveActivity = recentLeaves.map(leave => {
             const diffMins = Math.round((new Date() - new Date(leave.updatedAt)) / 60000);
+
+            let actionText = "Leave Requested";
+            if (leave.status === 'approved') actionText = "Leave Approved";
+            if (leave.status === 'rejected') actionText = "Leave Denied";
+
             return {
                 id: leave._id,
                 name: leave.employee?.name || "Unknown Staff",
-                profilePicture: leave.employee?.profilePicture || null, // Pass it to frontend
+                profilePicture: leave.employee?.profilePicture || null,
                 zone: leave.employee?.zone || "N/A",
                 leaveRange: `${new Date(leave.fromDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })} - ${new Date(leave.toDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}`,
                 category: "Leave Request",
-                action: `Leave ${leave.status.charAt(0).toUpperCase() + leave.status.slice(1)}`,
+                action: actionText,
                 time: new Date(leave.updatedAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
                 timeAgo: diffMins < 1 ? "Just now" : diffMins < 60 ? `${diffMins}m ago` : `${Math.floor(diffMins / 60)}h ago`,
-                status: leave.status === 'approved' ? 'Approved' : 'Rejected',
-                createdAt: leave.updatedAt
+                status: leave.status === 'approved' ? 'Approved' : leave.status === 'rejected' ? 'Rejected' : 'Pending',
+                sortTimestamp: leave.updatedAt // Unifying sorting key
             };
         });
 
-        // 9. Merge and Sort
+        // ========================================================
+        // 9. Merge and Sort (USING THE UNIFIED TIMESTAMP)
+        // ========================================================
         const combinedActivity = [...attendanceActivity, ...leaveActivity]
-            .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+            .sort((a, b) => new Date(b.sortTimestamp) - new Date(a.sortTimestamp))
             .slice(0, 15);
 
         // 10. Send Response
@@ -1602,15 +1623,13 @@ adminRouter.get('/events', userAuth, adminAuth, async (req, res) => {
 });
 
 // ==========================================
-// 20. OVERRIDE ATTENDANCE
+// 20. OVERRIDE ATTENDANCE (FIXED STATUSES)
 // ==========================================
 adminRouter.put('/attendance/:id/override', userAuth, adminAuth, async (req, res) => {
     try {
         const { id } = req.params;
         const { action, reason, teacherId, schoolId, band, date } = req.body;
 
-        // 1. Determine the query. If it's a pending shift, the ID might just be a frontend string like "schoolId-band"
-        // So we fallback to matching the exact shift details.
         const query = mongoose.Types.ObjectId.isValid(id)
             ? { _id: id }
             : { teacher: teacherId, school: schoolId, band: band, date: date };
@@ -1618,7 +1637,9 @@ adminRouter.put('/attendance/:id/override', userAuth, adminAuth, async (req, res
         let updateDoc = {};
         const now = new Date();
 
-        // 2. Handle "Revoke" Action (Deletes record or Undoes Checkout)
+        // ==========================================
+        // 1. HANDLE "REVOKE" ACTION
+        // ==========================================
         if (action === "Revoke") {
             const existingRecord = await Attendance.findOne(query);
             if (!existingRecord) {
@@ -1626,14 +1647,19 @@ adminRouter.put('/attendance/:id/override', userAuth, adminAuth, async (req, res
             }
 
             if (existingRecord.checkOutTime) {
-                // Undo Checkout
-                await Attendance.findOneAndUpdate(query, { $unset: { checkOutTime: 1 } }, { returnDocument: 'after' });
+                // Undo Checkout: Remove the checkout time AND reset status to Present!
+                await Attendance.findOneAndUpdate(query, {
+                    $unset: { checkOutTime: 1, checkOutCoordinates: 1 },
+                    $set: { status: "Present" }
+                }, { returnDocument: 'after' });
             } else {
-                // Revoke All (Delete the pending/checked-in record entirely)
+                // Revoke All: Delete the record entirely
                 await Attendance.findOneAndDelete(query);
             }
         }
-        // 3. Handle all other actions (Upsert logic)
+        // ==========================================
+        // 2. HANDLE ALL OTHER ACTIONS
+        // ==========================================
         else {
             switch (action) {
                 case "CheckIn":
@@ -1641,7 +1667,8 @@ adminRouter.put('/attendance/:id/override', userAuth, adminAuth, async (req, res
                     if (reason) updateDoc.$set.teacherNote = `Admin Override: ${reason}`;
                     break;
                 case "CheckOut":
-                    updateDoc = { $set: { checkOutTime: now, status: "Completed" } };
+                    // MUST be 'Checked Out' to match Dashboard & Mongoose enum!
+                    updateDoc = { $set: { checkOutTime: now, status: "Checked Out" } };
                     if (reason) updateDoc.$set.teacherNote = `Admin Override: ${reason}`;
                     break;
                 case "Absent":
@@ -1653,11 +1680,13 @@ adminRouter.put('/attendance/:id/override', userAuth, adminAuth, async (req, res
                 case "Event":
                     updateDoc = { $set: { status: "Event", eventNote: reason || "Admin triggered Event" } };
                     break;
+                case "Holiday":
+                    updateDoc = { $set: { status: "Holiday", teacherNote: reason || "Admin marked Holiday" } };
+                    break;
                 default:
                     return res.status(400).json({ success: false, message: "Invalid action provided." });
             }
 
-            // Force an update or create it if it doesn't exist (Upsert)
             await Attendance.findOneAndUpdate(query, updateDoc, {
                 returnDocument: 'after',
                 upsert: true,
@@ -1665,16 +1694,17 @@ adminRouter.put('/attendance/:id/override', userAuth, adminAuth, async (req, res
             });
         }
 
-        // --- REAL-TIME SOCKET UPDATES ---
+        // ==========================================
+        // 3. REAL-TIME SOCKET UPDATES
+        // ==========================================
         const io = req.io;
         if (io) {
-            // 1. Tell ALL admin dashboards to refresh silently
-            io.emit("operations_update", { message: "Admin override applied" });
+            // Tell ALL admin dashboards to refresh silently 
+            // (Make sure it matches the exact event the frontend is listening to)
+            io.emit("operations_update", { type: "refresh_feed" });
 
-            // 2. Tell the specific employee's app to refresh their schedule so they see the admin's changes
             if (teacherId) {
                 io.to(teacherId.toString()).emit("employee_schedule_refresh");
-                // Fallback to "new_notification" just in case your employee app still uses the old listener
                 io.to(teacherId.toString()).emit("new_notification", {
                     type: "SCHEDULE_UPDATE",
                     message: `Admin modified your schedule (${action}).`
