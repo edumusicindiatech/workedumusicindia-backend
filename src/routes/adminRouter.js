@@ -1188,7 +1188,7 @@ adminRouter.post('/employees/:id/warnings', userAuth, adminAuth, async (req, res
 });
 
 // ==========================================
-// 15. GET EMPLOYEE ATTENDANCE (HIERARCHICAL) 
+// 15. GET EMPLOYEE ATTENDANCE (HIERARCHICAL & TIMEZONE FIXED) 
 // ==========================================
 adminRouter.get('/employees/:id/attendance', userAuth, adminAuth, async (req, res) => {
     try {
@@ -1210,16 +1210,27 @@ adminRouter.get('/employees/:id/attendance', userAuth, adminAuth, async (req, re
 
         const monthMap = new Map();
 
+        // --- THE FIX: Force Asia/Kolkata Timezone ---
         const formatTime = (dateString) => {
             if (!dateString) return "-";
-            return new Date(dateString).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+            return new Date(dateString).toLocaleTimeString('en-US', {
+                timeZone: 'Asia/Kolkata',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
         };
 
-        // --- HELPER: Ensure Month Exists ---
+        const getISTPart = (dateObj, options) => {
+            return new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', ...options }).format(dateObj);
+        };
+
+        // --- HELPER: Ensure Month Exists (Timezone Safe) ---
         const getOrCreateMonth = (dateObj) => {
-            const year = dateObj.getFullYear();
-            const monthName = dateObj.toLocaleString('en-US', { month: 'long' });
-            const monthKey = `${year}-${dateObj.getMonth() + 1}`;
+            const year = getISTPart(dateObj, { year: 'numeric' });
+            const monthName = getISTPart(dateObj, { month: 'long' });
+            const monthNum = getISTPart(dateObj, { month: 'numeric' });
+
+            const monthKey = `${year}-${monthNum}`;
             const formattedMonth = `${monthName} ${year}`;
 
             if (!monthMap.has(monthKey)) {
@@ -1238,7 +1249,7 @@ adminRouter.get('/employees/:id/attendance', userAuth, adminAuth, async (req, re
             const schoolId = att.school ? att.school._id.toString() : "deleted-school";
 
             const dateObj = new Date(att.date);
-            const year = dateObj.getFullYear(); // <-- THE FIX: Define year here so it can be used in the loop!
+            const year = getISTPart(dateObj, { year: 'numeric' });
 
             const monthObj = getOrCreateMonth(dateObj);
 
@@ -1253,7 +1264,7 @@ adminRouter.get('/employees/:id/attendance', userAuth, adminAuth, async (req, re
             if (!schoolObj.categoriesMap.has(categoryId)) {
                 schoolObj.categoriesMap.set(categoryId, {
                     id: categoryId, name: categoryName, recordCount: 0,
-                    metrics: { present: 0, late: 0, absent: 0, events: 0, holidays: 0 },
+                    metrics: { present: 0, late: 0, absent: 0, events: 0, holidays: 0, mediaSent: 0 },
                     records: []
                 });
             }
@@ -1261,21 +1272,23 @@ adminRouter.get('/employees/:id/attendance', userAuth, adminAuth, async (req, re
 
             catObj.recordCount++;
             const statusUpper = (att.status || "UNKNOWN").toUpperCase();
-            if (statusUpper === 'PRESENT') catObj.metrics.present++;
+            if (statusUpper === 'PRESENT' || statusUpper === 'CHECKED OUT') catObj.metrics.present++;
             else if (statusUpper === 'LATE') catObj.metrics.late++;
             else if (statusUpper === 'ABSENT') catObj.metrics.absent++;
             else if (statusUpper === 'HOLIDAY') catObj.metrics.holidays++;
             else if (statusUpper === 'EVENT') catObj.metrics.events++;
 
-            const dayName = dateObj.toLocaleString('en-US', { weekday: 'short' });
-            const dayNum = dateObj.getDate().toString().padStart(2, '0');
-            const shortMonth = dateObj.toLocaleString('en-US', { month: 'short' });
+            // Use IST for exact day names and dates
+            const dayName = getISTPart(dateObj, { weekday: 'short' });
+            const dayNum = getISTPart(dateObj, { day: '2-digit' });
+            const shortMonth = getISTPart(dateObj, { month: 'short' });
+
             const displayNote = att.teacherNote || att.lateReason || att.eventNote || null;
             const reportForDay = dailyReports.find(report => report.date === att.date);
 
             catObj.records.push({
                 id: att._id.toString(),
-                date: `${shortMonth} ${dayNum}, ${year} (${dayName})`, // 'year' is now safely defined
+                date: `${shortMonth} ${dayNum}, ${year} (${dayName})`,
                 rawDate: att.date,
                 time: formatTime(att.checkInTime) || "-",
                 status: statusUpper,
