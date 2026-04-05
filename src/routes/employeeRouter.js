@@ -207,7 +207,7 @@ employeeRouter.post('/check-in', userAuth, async (req, res) => {
             location: {
                 $nearSphere: {
                     $geometry: { type: "Point", coordinates: [parseFloat(longitude), parseFloat(latitude)] },
-                    $maxDistance: 100
+                    $maxDistance: 200
                 }
             }
         });
@@ -266,7 +266,7 @@ employeeRouter.post('/check-out', userAuth, async (req, res) => {
             location: {
                 $nearSphere: {
                     $geometry: { type: "Point", coordinates: [parseFloat(longitude), parseFloat(latitude)] },
-                    $maxDistance: 100
+                    $maxDistance: 200
                 }
             }
         });
