@@ -2,12 +2,13 @@ const cron = require('node-cron');
 const User = require('../models/User');
 const Attendance = require('../models/Attendance');
 const MediaLog = require('../models/MediaLog');
-const LeaveRequest = require('../models/LeaveRequest'); // <-- NOW PROPERLY UTILIZED
+const LeaveRequest = require('../models/LeaveRequest');
 const Warning = require('../models/Warning');
 const WeeklyProgress = require('../models/WeeklyProgress');
 const Notification = require('../models/Notification');
 const { sendWeeklyScoreToEmployee, sendTopPerformersToAdmin } = require('../utils/emailService');
 const { canSendEmailToUser } = require('../utils/canSendEmailToUser');
+const { getISTDateString, getISTDayOfWeek } = require('../utils/timeHelper'); // <-- IMPORTED HELPERS
 
 // Helper to calculate the score for a single employee (Now takes true Expected Days and Stats)
 const calculateScoreAndZone = (earnedAttendancePoints, expectedDays, stats, mediaLogs, warnings, previousScore) => {
@@ -74,8 +75,9 @@ const startWeeklyScoreCron = (io) => {
             const lastSaturday = new Date(today);
             lastSaturday.setDate(today.getDate() - 7);
 
-            const startDateStr = lastSaturday.toISOString().split('T')[0];
-            const endDateStr = today.toISOString().split('T')[0];
+            // --- SYNCED DATES ---
+            const startDateStr = getISTDateString(lastSaturday);
+            const endDateStr = getISTDateString(today);
 
             // 1. Fetch all active employees
             const employees = await User.find({ role: 'Employee', isActive: true });
@@ -83,6 +85,7 @@ const startWeeklyScoreCron = (io) => {
 
             // 2. Calculate scores for everyone
             for (const emp of employees) {
+                // String comparison for DB date queries works perfectly
                 const attendance = await Attendance.find({ teacher: emp._id, date: { $gte: startDateStr, $lte: endDateStr } });
                 const mediaLogs = await MediaLog.find({ teacher: emp._id, createdAt: { $gte: lastSaturday, $lte: today } });
                 const warnings = await Warning.find({ teacher: emp._id, dateIssued: { $gte: lastSaturday, $lte: today } });
@@ -92,23 +95,22 @@ const startWeeklyScoreCron = (io) => {
                 let stats = { present: 0, late: 0, absent: 0, leaves: 0, warningsCount: 0, averageMediaScore: 0 };
 
                 // --- THE BULLETPROOF 7-DAY LOOP ---
-                // We check every single day of the past week to see what they were SUPPOSED to do.
                 for (let i = 1; i <= 7; i++) {
                     const checkDate = new Date(lastSaturday);
                     checkDate.setDate(lastSaturday.getDate() + i);
 
-                    const checkDateStr = checkDate.toISOString().split('T')[0];
-                    const dayName = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][checkDate.getDay()];
+                    const checkDateStr = getISTDateString(checkDate);
+                    const dayName = getISTDayOfWeek(checkDate);
 
-                    // A. Was the employee on leave this day?
-                    const checkStart = new Date(checkDate).setHours(0, 0, 0, 0);
-                    const checkEnd = new Date(checkDate).setHours(23, 59, 59, 999);
+                    // A. Was the employee on leave this day? (IST Boundary Fix)
+                    const checkStart = new Date(`${checkDateStr}T00:00:00.000+05:30`);
+                    const checkEnd = new Date(`${checkDateStr}T23:59:59.999+05:30`);
 
                     const isOnLeave = await LeaveRequest.findOne({
                         employee: emp._id,
                         status: 'approved',
-                        fromDate: { $lte: new Date(checkEnd) },
-                        toDate: { $gte: new Date(checkStart) }
+                        fromDate: { $lte: checkEnd },
+                        toDate: { $gte: checkStart }
                     });
 
                     if (isOnLeave) {
@@ -116,16 +118,24 @@ const startWeeklyScoreCron = (io) => {
                         continue; // Do not count this day towards expected shifts
                     }
 
-                    // B. Were they expected to work? (Date Isolation Logic)
+                    // B. Were they expected to work? (Timezone Safe String Math Fix)
                     let expectedToWork = false;
                     if (emp.assignments && emp.assignments.length > 0) {
                         for (const assign of emp.assignments) {
                             if (assign.allowedDays.includes(dayName)) {
-                                const aStart = assign.startDate ? new Date(assign.startDate).setHours(0, 0, 0, 0) : 0;
-                                let aEnd = Infinity;
-                                if (assign.endDate) aEnd = new Date(assign.endDate).setHours(23, 59, 59, 999);
 
-                                if (checkDate.getTime() >= aStart && checkDate.getTime() <= aEnd) {
+                                const assignmentStartDate = assign.startDate ? new Date(assign.startDate) : assign._id.getTimestamp();
+                                const assignStartStr = getISTDateString(assignmentStartDate);
+
+                                const isAfterStartDate = checkDateStr >= assignStartStr;
+
+                                let isBeforeEndDate = true;
+                                if (assign.endDate) {
+                                    const assignEndStr = getISTDateString(new Date(assign.endDate));
+                                    isBeforeEndDate = checkDateStr <= assignEndStr;
+                                }
+
+                                if (isAfterStartDate && isBeforeEndDate) {
                                     expectedToWork = true;
                                     break;
                                 }
@@ -150,7 +160,7 @@ const startWeeklyScoreCron = (io) => {
                             }
                         } else {
                             // If they were expected to work, but have NO record in the DB
-                            // (e.g., auto-absent cron failed), we strictly count them as absent!
+                            // we strictly count them as absent!
                             stats.absent += 1;
                         }
                     }

@@ -3,9 +3,10 @@ const cron = require('node-cron');
 const User = require('../models/User');
 const Attendance = require('../models/Attendance');
 const Notification = require('../models/Notification');
-const LeaveRequest = require('../models/LeaveRequest'); // <-- ADDED
+const LeaveRequest = require('../models/LeaveRequest');
 const { sendPreShiftWarningEmail } = require('../utils/emailService');
-const { canSendEmailToUser } = require('../utils/canSendEmailToUser'); // <-- ADDED for consistency
+const { canSendEmailToUser } = require('../utils/canSendEmailToUser');
+const { getISTDateString } = require('../utils/timeHelper'); // <-- IMPORTED TIME HELPER
 
 // Helper to reliably get local time formatted as "08:00 AM" and "YYYY-MM-DD"
 const getTimeAndDateContext = (minutesToAdd = 0) => {
@@ -20,17 +21,16 @@ const getTimeAndDateContext = (minutesToAdd = 0) => {
     const dayFormatter = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', weekday: 'short' });
     const currentDayName = dayFormatter.format(d);
 
-    // Get Time: "HH:MM" in 24-hour format to match your database!
+    // Get Time: "HH:MM" in 24-hour format
     const timeFormatter = new Intl.DateTimeFormat('en-GB', {
         timeZone: 'Asia/Kolkata',
         hour: '2-digit',
         minute: '2-digit',
-        hour12: false // Forces 24-hour format
+        hour12: false
     });
-    const targetTimeStr = timeFormatter.format(d); // Outputs "08:00", "14:30", etc.
+    const targetTimeStr = timeFormatter.format(d);
 
-    // Return the actual Date object too so we can use it for Leave/Start/End checks
-    return { dateString, currentDayName, targetTimeStr, targetDateObj: d };
+    return { dateString, currentDayName, targetTimeStr }; // targetDateObj removed as it's no longer safely needed
 };
 
 const startShiftWarningCron = (io) => {
@@ -38,13 +38,11 @@ const startShiftWarningCron = (io) => {
     cron.schedule('* * * * *', async () => {
         try {
             // 1. Look exactly 15 minutes into the future
-            const { dateString, currentDayName, targetTimeStr, targetDateObj } = getTimeAndDateContext(15);
+            const { dateString, currentDayName, targetTimeStr } = getTimeAndDateContext(15);
 
-            // --- SYNCED LEAVE CHECKER ---
-            const todayStart = new Date(targetDateObj);
-            todayStart.setHours(0, 0, 0, 0);
-            const todayEnd = new Date(targetDateObj);
-            todayEnd.setHours(23, 59, 59, 999);
+            // --- SYNCED LEAVE CHECKER (IST Boundaries) ---
+            const todayStart = new Date(`${dateString}T00:00:00.000+05:30`);
+            const todayEnd = new Date(`${dateString}T23:59:59.999+05:30`);
 
             const activeLeaves = await LeaveRequest.find({
                 status: 'approved',
@@ -80,18 +78,17 @@ const startShiftWarningCron = (io) => {
                     // Check Time and Day first (Fastest checks)
                     if (!a.allowedDays.includes(currentDayName) || a.startTime !== targetTimeStr) return false;
 
-                    // --- SYNCED DATE ISOLATION LOGIC ---
+                    // --- SYNCED DATE ISOLATION LOGIC (Timezone Safe String Math) ---
                     const assignmentStartDate = a.startDate ? new Date(a.startDate) : a._id.getTimestamp();
-                    const normalizedStartDate = new Date(assignmentStartDate);
-                    normalizedStartDate.setHours(0, 0, 0, 0);
+                    const assignStartStr = getISTDateString(assignmentStartDate);
 
-                    const isAfterStartDate = todayStart >= normalizedStartDate;
+                    // YYYY-MM-DD string comparison perfectly sidesteps all UTC math!
+                    const isAfterStartDate = dateString >= assignStartStr;
 
                     let isBeforeEndDate = true;
                     if (a.endDate) {
-                        const normalizedEndDate = new Date(a.endDate);
-                        normalizedEndDate.setHours(23, 59, 59, 999);
-                        isBeforeEndDate = todayStart <= normalizedEndDate;
+                        const assignEndStr = getISTDateString(new Date(a.endDate));
+                        isBeforeEndDate = dateString <= assignEndStr;
                     }
 
                     // Only keep this assignment if it hasn't expired and isn't in the future

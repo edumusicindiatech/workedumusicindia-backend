@@ -10,18 +10,10 @@ const jwt = require('jsonwebtoken')
 // User / Admin Login
 authRouter.post('/login', async (req, res) => {
     try {
-        // --- ADD deviceId to the destructured body ---
         const { employeeId, password, deviceId } = req.body;
 
         if (!employeeId || !password) {
             return res.status(400).json({ success: false, message: "Employee ID and password are required" });
-        }
-
-        // --- NEW DEVICE ID CHECK (Only for mobile app users, assuming frontend sends it) ---
-        if (!deviceId) {
-            // Note: If admins log in from a web browser where you can't easily get a persistent Device ID, 
-            // you might want to bypass this check if the user trying to log in is an Admin.
-            return res.status(400).json({ success: false, message: "Device ID is required for security verification." });
         }
 
         const user = await User.findOne({ employeeId }).select('+password');
@@ -37,8 +29,13 @@ authRouter.post('/login', async (req, res) => {
         // --- NEW DEVICE BINDING LOGIC ---
         // Exclude admins if they log in via web browser
         if (user.role === 'Employee') {
+            // Check for Device ID ONLY if the user is an Employee
+            if (!deviceId) {
+                return res.status(400).json({ success: false, message: "Device ID is required for security verification." });
+            }
+
             if (user.isFirstLogin) {
-                // Bind the device on first login
+                // Bind the device on first login (or after an Admin resets it)
                 user.deviceId = deviceId;
                 await user.save();
             } else {

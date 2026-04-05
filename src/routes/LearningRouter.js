@@ -2,9 +2,6 @@ const express = require('express');
 const LearningRouter = express.Router();
 const crypto = require('crypto');
 const path = require('path');
-const fs = require('fs');
-const os = require('os');
-const ffmpeg = require('fluent-ffmpeg');
 const { PutObjectCommand, DeleteObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 

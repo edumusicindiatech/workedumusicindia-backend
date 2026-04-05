@@ -25,6 +25,7 @@ const { PutObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const assetsS3Client = require('../config/assetsS3Client');
 const s3Client = require('../config/s3');
+const { getISTDayOfWeek, getISTDateString } = require('../utils/timeHelper');
 
 // ==========================================
 // 1. CREATE ADMIN (SuperAdmin Only)
@@ -1323,8 +1324,8 @@ adminRouter.get('/employees/:id/attendance', userAuth, adminAuth, async (req, re
 
             catObj.recordCount++;
 
-            const fromStr = dateObj.toISOString().split('T')[0];
-            const toStr = new Date(leave.toDate).toISOString().split('T')[0];
+            const fromStr = getISTDateString(dateObj);
+            const toStr = getISTDateString(new Date(leave.toDate));
 
             const daysDiff = Math.round((new Date(leave.toDate) - dateObj) / (1000 * 60 * 60 * 24)) + 1;
 
@@ -1384,8 +1385,6 @@ adminRouter.get('/daily-feed', async (req, res) => {
 adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
     try {
         const today = new Date();
-
-        // 1. Define the 24-hour window for "Today"
         const todayStart = new Date();
         todayStart.setHours(0, 0, 0, 0);
         const todayEnd = new Date();
@@ -1395,14 +1394,11 @@ adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
             timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit'
         });
         const dateString = dateFormatter.format(today);
-        const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-        const currentDayName = days[today.getDay()];
+        const currentDayName = getISTDayOfWeek();
 
-        // 2. Basic Staff Stats
         const employees = await User.find({ role: 'Employee', isActive: true });
         const totalEmployees = employees.length;
 
-        // 3. Count UNIQUE people on leave today
         const activeLeaves = await LeaveRequest.find({
             status: 'approved',
             fromDate: { $lte: todayEnd },
@@ -1413,25 +1409,21 @@ adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
         const onLeaveToday = uniqueEmployeesOnLeave.length;
         const usersOnLeaveSet = new Set(uniqueEmployeesOnLeave);
 
-        // 4. Calculate Expected Shifts
         const normalizedToday = new Date();
         normalizedToday.setHours(0, 0, 0, 0);
 
         let expectedShifts = 0;
-
         employees.forEach(emp => {
             if (!emp.assignments || emp.assignments.length === 0) return;
-            if (usersOnLeaveSet.has(emp._id.toString())) return; // Ignore if on leave
+            if (usersOnLeaveSet.has(emp._id.toString())) return;
 
             emp.assignments.forEach(assign => {
                 if (!assign.school) return;
-
                 const assignmentStartDate = assign.startDate ? new Date(assign.startDate) : assign._id.getTimestamp();
                 const normalizedStartDate = new Date(assignmentStartDate);
                 normalizedStartDate.setHours(0, 0, 0, 0);
 
                 const isAfterStartDate = normalizedToday >= normalizedStartDate;
-
                 let isBeforeEndDate = true;
                 if (assign.endDate) {
                     const normalizedEndDate = new Date(assign.endDate);
@@ -1445,52 +1437,51 @@ adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
             });
         });
 
-        // ========================================================
-        // 5. Fetch Today's Attendance (SORTED BY UPDATED_AT)
-        // ========================================================
         const todaysAttendance = await Attendance.find({ date: dateString })
             .populate('teacher', 'name zone profilePicture')
             .populate('school', 'schoolName address')
-            .sort({ updatedAt: -1 }); // <--- CRITICAL FIX: Sorts by the latest action
+            .sort({ updatedAt: -1 });
 
-        // ========================================================
-        // 6. Fetch Recent Leave Actions (SORTED BY UPDATED_AT)
-        // ========================================================
         const recentLeaves = await LeaveRequest.find({
             updatedAt: { $gte: new Date(Date.now() - 48 * 60 * 60 * 1000) }
         })
             .populate('employee', 'name zone profilePicture')
             .sort({ updatedAt: -1 });
 
-        // Calculate Overview Stats
+        // UPDATED OVERVIEW STATS: presentCount now represents "On-Site" (Present but not Checked Out)
         let presentCount = 0;
         let noShowCount = 0;
 
         todaysAttendance.forEach(record => {
-            if (['Present', 'Late', 'Event'].includes(record.status)) presentCount++;
+            if (['Present', 'Late', 'Event'].includes(record.status) && !record.checkOutTime) {
+                presentCount++;
+            }
             if (record.status === 'Absent') noShowCount++;
         });
 
         const pendingCount = Math.max(0, expectedShifts - todaysAttendance.length);
 
-        // ========================================================
-        // 7. Format Attendance (DYNAMIC STATUS MAPPING)
-        // ========================================================
+        // UPDATED ACTIVITY FEED: Map action based on checkOutTime field
         const attendanceActivity = todaysAttendance.map(att => {
             const diffMins = Math.round((new Date() - new Date(att.updatedAt)) / 60000);
 
-            // Map every single possible status to a readable action text
             let actionText = "Status Updated";
-            if (att.status === 'Present') actionText = "Checked In";
-            if (att.status === 'Late') actionText = "Late Check-in";
-            if (att.status === 'Checked Out') actionText = "Checked Out";
-            if (att.status === 'Absent') actionText = "Marked Absent"; // Captures both Employee & Admin marking
-            if (att.status === 'Holiday') actionText = "Marked Holiday";
-            if (att.status === 'Event') actionText = "Added Event Note";
+            if (att.checkOutTime) {
+                actionText = "Checked Out";
+            } else if (att.status === 'Present') {
+                actionText = "Checked In";
+            } else if (att.status === 'Late') {
+                actionText = "Late Check-in";
+            } else if (att.status === 'Absent') {
+                actionText = "Marked Absent";
+            } else if (att.status === 'Holiday') {
+                actionText = "Marked Holiday";
+            } else if (att.status === 'Event') {
+                actionText = "Added Event Note";
+            }
 
-            // Figure out which time to display based on the action
             let displayTime = att.updatedAt;
-            if (att.status === 'Checked Out' && att.checkOutTime) displayTime = att.checkOutTime;
+            if (att.checkOutTime) displayTime = att.checkOutTime;
             else if (att.status === 'Present' || att.status === 'Late') displayTime = att.checkInTime || att.updatedAt;
 
             return {
@@ -1504,16 +1495,12 @@ adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
                 time: new Date(displayTime).toLocaleTimeString('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' }),
                 timeAgo: diffMins < 1 ? "Just now" : diffMins < 60 ? `${diffMins}m ago` : `${Math.floor(diffMins / 60)}h ago`,
                 status: att.status,
-                sortTimestamp: att.updatedAt // Unifying sorting key
+                sortTimestamp: att.updatedAt
             };
         });
 
-        // ========================================================
-        // 8. Format Leave Actions
-        // ========================================================
         const leaveActivity = recentLeaves.map(leave => {
             const diffMins = Math.round((new Date() - new Date(leave.updatedAt)) / 60000);
-
             let actionText = "Leave Requested";
             if (leave.status === 'approved') actionText = "Leave Approved";
             if (leave.status === 'rejected') actionText = "Leave Denied";
@@ -1529,18 +1516,14 @@ adminRouter.get('/dashboard-stats', userAuth, adminAuth, async (req, res) => {
                 time: new Date(leave.updatedAt).toLocaleTimeString('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' }),
                 timeAgo: diffMins < 1 ? "Just now" : diffMins < 60 ? `${diffMins}m ago` : `${Math.floor(diffMins / 60)}h ago`,
                 status: leave.status === 'approved' ? 'Approved' : leave.status === 'rejected' ? 'Rejected' : 'Pending',
-                sortTimestamp: leave.updatedAt // Unifying sorting key
+                sortTimestamp: leave.updatedAt
             };
         });
 
-        // ========================================================
-        // 9. Merge and Sort (USING THE UNIFIED TIMESTAMP)
-        // ========================================================
         const combinedActivity = [...attendanceActivity, ...leaveActivity]
             .sort((a, b) => new Date(b.sortTimestamp) - new Date(a.sortTimestamp))
             .slice(0, 15);
 
-        // 10. Send Response
         res.json({
             success: true,
             data: {
@@ -1650,9 +1633,6 @@ adminRouter.put('/attendance/:id/override', userAuth, adminAuth, async (req, res
         let updateDoc = {};
         const now = new Date();
 
-        // ==========================================
-        // 1. HANDLE "REVOKE" ACTION
-        // ==========================================
         if (action === "Revoke") {
             const existingRecord = await Attendance.findOne(query);
             if (!existingRecord) {
@@ -1660,19 +1640,14 @@ adminRouter.put('/attendance/:id/override', userAuth, adminAuth, async (req, res
             }
 
             if (existingRecord.checkOutTime) {
-                // Undo Checkout: Remove the checkout time AND reset status to Present!
                 await Attendance.findOneAndUpdate(query, {
                     $unset: { checkOutTime: 1, checkOutCoordinates: 1 },
                     $set: { status: "Present" }
                 }, { returnDocument: 'after' });
             } else {
-                // Revoke All: Delete the record entirely
                 await Attendance.findOneAndDelete(query);
             }
         }
-        // ==========================================
-        // 2. HANDLE ALL OTHER ACTIONS
-        // ==========================================
         else {
             switch (action) {
                 case "CheckIn":
@@ -1680,8 +1655,8 @@ adminRouter.put('/attendance/:id/override', userAuth, adminAuth, async (req, res
                     if (reason) updateDoc.$set.teacherNote = `Admin Override: ${reason}`;
                     break;
                 case "CheckOut":
-                    // MUST be 'Checked Out' to match Dashboard & Mongoose enum!
-                    updateDoc = { $set: { checkOutTime: now, status: "Checked Out" } };
+                    // UPDATED: Only set the checkOutTime, do NOT change status to 'Checked Out'.
+                    updateDoc = { $set: { checkOutTime: now } };
                     if (reason) updateDoc.$set.teacherNote = `Admin Override: ${reason}`;
                     break;
                 case "Absent":
@@ -1707,15 +1682,9 @@ adminRouter.put('/attendance/:id/override', userAuth, adminAuth, async (req, res
             });
         }
 
-        // ==========================================
-        // 3. REAL-TIME SOCKET UPDATES
-        // ==========================================
         const io = req.io;
         if (io) {
-            // Tell ALL admin dashboards to refresh silently 
-            // (Make sure it matches the exact event the frontend is listening to)
             io.emit("operations_update", { type: "refresh_feed" });
-
             if (teacherId) {
                 io.to(teacherId.toString()).emit("employee_schedule_refresh");
                 io.to(teacherId.toString()).emit("new_notification", {
@@ -1828,9 +1797,9 @@ adminRouter.get('/leave-requests', userAuth, adminAuth, async (req, res) => {
             id: request._id,
             employeeName: request.employee ? request.employee.name : "Unknown Employee",
             employeeEmail: request.employee ? request.employee.email : "N/A",
-            fromDate: new Date(request.fromDate).toISOString().split('T')[0],
+            fromDate: getISTDateString(new Date(request.fromDate)),
             profilePicture: request.employee ? request.employee.profilePicture : null,
-            toDate: new Date(request.toDate).toISOString().split('T')[0],
+            toDate: getISTDateString(new Date(request.toDate)),
             reason: request.reason,
             status: request.status,
             adminRemarks: request.adminRemarks,
@@ -2204,8 +2173,8 @@ adminRouter.delete('/profile-picture', userAuth, adminAuth, async (req, res) => 
             // CRITICAL FIX: Decode the URL so spaces aren't passed as %20
             fileKey = decodeURIComponent(fileKey);
 
-            await s3Client.send(new DeleteObjectCommand({
-                Bucket: process.env.R2_BUCKET_NAME,
+            await assetsS3Client.send(new DeleteObjectCommand({
+                Bucket: process.env.CF_ASSETS_BUCKET,
                 Key: fileKey
             }));
         } catch (r2Error) {
@@ -2251,7 +2220,7 @@ adminRouter.get('/me/profile', userAuth, adminAuth, async (req, res) => {
 });
 
 // ==========================================
-// 31. CHANGE ADMIN / SUPERADMIN PASSWORD (MANUAL HASH)
+// 32. CHANGE ADMIN / SUPERADMIN PASSWORD (MANUAL HASH)
 // ==========================================
 adminRouter.put('/profile/password', userAuth, adminAuth, async (req, res) => {
     try {

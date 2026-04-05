@@ -8,6 +8,7 @@ const {
     sendEmployeeCheckoutReminder,
     sendAdminCheckoutAlert
 } = require('../utils/emailService');
+const { getISTDateString } = require('../utils/timeHelper');
 
 const getTimeAndDateContext = (minutesToSubtract = 0) => {
     const d = new Date();
@@ -43,10 +44,11 @@ const startCheckoutReminderCron = (io) => {
             console.log(`[Cron tick] Checking overdues... -> Searching for EndTime: Day: ${context.currentDayName}, Time: ${context.targetTimeStr}`);
 
             // --- SYNCED LEAVE CHECKER ---
-            const todayStart = new Date(context.targetDateObj);
-            todayStart.setHours(0, 0, 0, 0);
-            const todayEnd = new Date(context.targetDateObj);
-            todayEnd.setHours(23, 59, 59, 999);
+            const currentISTDate = context.dateString;
+
+            // Force strict IST boundaries for the database query by appending the offset
+            const todayStart = new Date(`${currentISTDate}T00:00:00.000+05:30`);
+            const todayEnd = new Date(`${currentISTDate}T23:59:59.999+05:30`);
 
             const activeLeaves = await LeaveRequest.find({
                 status: 'approved',
@@ -81,16 +83,15 @@ const startCheckoutReminderCron = (io) => {
 
                     // --- DATE ISOLATION LOGIC ---
                     const assignmentStartDate = a.startDate ? new Date(a.startDate) : a._id.getTimestamp();
-                    const normalizedStartDate = new Date(assignmentStartDate);
-                    normalizedStartDate.setHours(0, 0, 0, 0);
+                    const assignStartStr = getISTDateString(assignmentStartDate);
 
-                    const isAfterStartDate = todayStart >= normalizedStartDate;
+                    // YYYY-MM-DD string comparison perfectly sidesteps all UTC math!
+                    const isAfterStartDate = currentISTDate >= assignStartStr;
 
                     let isBeforeEndDate = true;
                     if (a.endDate) {
-                        const normalizedEndDate = new Date(a.endDate);
-                        normalizedEndDate.setHours(23, 59, 59, 999);
-                        isBeforeEndDate = todayStart <= normalizedEndDate;
+                        const assignEndStr = getISTDateString(new Date(a.endDate));
+                        isBeforeEndDate = currentISTDate <= assignEndStr;
                     }
 
                     return isAfterStartDate && isBeforeEndDate;

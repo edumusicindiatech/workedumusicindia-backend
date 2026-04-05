@@ -34,6 +34,7 @@ const DailyReports = require('../models/DailyReports');
 const LeaveRequest = require('../models/LeaveRequest');
 const path = require('path');
 const assetsS3Client = require('../config/assetsS3Client');
+const { getISTDateString, getISTDayOfWeek } = require('../utils/timeHelper');
 
 const employeeRouter = express.Router();
 
@@ -44,11 +45,21 @@ const employeeRouter = express.Router();
 // Convert "08:00 AM" to today's Date object for time math
 const getScheduledDate = (timeStr) => {
     const now = new Date();
-    const [time, modifier] = timeStr.split(' ');
+    // Split by space to check for AM/PM
+    const parts = timeStr.split(' ');
+    const time = parts[0];
+    const modifier = parts[1]; // Will be undefined for "08:00"
+
     let [hours, minutes] = time.split(':');
     hours = parseInt(hours, 10);
-    if (hours === 12) hours = 0;
-    if (modifier === 'PM') hours += 12;
+
+    if (modifier) {
+        // Handle 12-hour format logic
+        if (hours === 12 && modifier === 'AM') hours = 0;
+        if (hours !== 12 && modifier === 'PM') hours += 12;
+    }
+    // If no modifier exists (24h format), we just use the hours as they are!
+
     now.setHours(hours, parseInt(minutes, 10), 0, 0);
     return now;
 };
@@ -121,8 +132,8 @@ employeeRouter.get('/my-schedule', userAuth, async (req, res) => {
     try {
         const employeeId = req.user._id;
         const now = new Date();
-        const todayString = now.toISOString().split('T')[0];
-        const todayDayOfWeek = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][now.getDay()];
+        const todayString = getISTDateString();
+        const todayDayOfWeek = getISTDayOfWeek();
 
         const user = await User.findById(employeeId).populate({
             path: 'assignments.school',
@@ -211,7 +222,7 @@ employeeRouter.post('/check-in', userAuth, async (req, res) => {
             teacher: employee._id,
             school: school._id,
             band: band,
-            date: new Date().toISOString().split('T')[0],
+            date: getISTDateString(),
             checkInTime: new Date(),
             status,
             lateReason: lateReason || null,
@@ -220,7 +231,7 @@ employeeRouter.post('/check-in', userAuth, async (req, res) => {
         });
 
         const assignment = employee.assignments.find(a => a.school.toString() === schoolId && a.category === band);
-        const checkInTimeStr = new Date().toLocaleTimeString('en-US');
+        const checkInTimeStr = new Date().toLocaleTimeString('en-US', { timeZone: 'Asia/Kolkata' });
 
         // Notify Admins
         const admins = await notifyAdminsInApp(req, `Live Check-In: ${employee.name}`, `${employee.name} checked in at ${school.schoolName}`, status === 'Late' ? "Warning" : "System");
@@ -262,22 +273,27 @@ employeeRouter.post('/check-out', userAuth, async (req, res) => {
 
         if (!school) return res.status(403).json({ success: false, message: "You must be nearby alloted location for the check out." });
 
-        const todayString = new Date().toISOString().split('T')[0];
-        const record = await Attendance.findOne({ teacher: employee._id, school: schoolId, band, date: todayString, checkOutTime: null });
+        const todayString = getISTDateString();
+        const record = await Attendance.findOne({
+            teacher: employee._id,
+            school: schoolId,
+            band,
+            date: todayString,
+            checkOutTime: null
+        });
 
         if (!record) return res.status(400).json({ success: false, message: "No active check-in found." });
 
-        // Update the record with check-out details
+        // UPDATED LOGIC: Save the time and reason, but do NOT overwrite record.status.
+        // This ensures the record is still counted as 'Present' or 'Late' in reports.
         record.checkOutTime = new Date();
         record.overtimeReason = overtimeReason || null;
         record.checkOutCoordinates = [longitude, latitude];
-        record.status = 'Checked Out'; // Changes the status for the dashboard
 
         await record.save();
 
-        const checkOutTimeStr = new Date().toLocaleTimeString('en-US');
+        const checkOutTimeStr = new Date().toLocaleTimeString('en-US', { timeZone: 'Asia/Kolkata' });
 
-        // 🚀 THE FIX: This helper alone handles the DB notification AND the single Socket.io ping!
         const admins = await notifyAdminsInApp(
             req,
             `Check-Out: ${employee.name}`,
@@ -285,7 +301,6 @@ employeeRouter.post('/check-out', userAuth, async (req, res) => {
             overtimeReason ? "Warning" : "System"
         );
 
-        // Just handle emails in this loop now, no socket emits here.
         for (const admin of admins) {
             if (await canSendEmailToUser(admin)) {
                 await sendAdminCheckOutAlert(
@@ -324,7 +339,7 @@ employeeRouter.post('/mark-status', userAuth, async (req, res) => {
 
         if (!school) return res.status(404).json({ success: false, message: "School not found." });
 
-        const dateString = new Date().toISOString().split('T')[0];
+        const dateString = getISTDateString();
 
         const existingRecord = await Attendance.findOne({
             teacher: employeeId,
@@ -389,8 +404,8 @@ employeeRouter.post('/mark-day-status', userAuth, async (req, res) => {
 
         const employee = await User.findById(employeeId).populate('assignments.school');
 
-        const dateString = new Date().toISOString().split('T')[0];
-        const todayDayOfWeek = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date().getDay()];
+        const dateString = getISTDateString();
+        const todayDayOfWeek = getISTDayOfWeek();
 
         const todaysAssignments = employee.assignments.filter(a => a?.allowedDays?.includes(todayDayOfWeek));
 
@@ -564,7 +579,7 @@ employeeRouter.get('/assigned-schools', userAuth, async (req, res) => {
                 if (statusUpper === 'LEAVE' || statusUpper === 'HOLIDAY') stats.leaves++;
 
                 const d = new Date(a.date);
-                const formattedDate = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+                const formattedDate = d.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', month: 'short', day: 'numeric', year: 'numeric' });
 
                 return {
                     id: a._id,
@@ -837,39 +852,9 @@ employeeRouter.put('/settings/preferences', userAuth, async (req, res) => {
     }
 });
 
-// ==========================================
-// 16. GET PENDING & RECENT TASKS
-// ==========================================
-employeeRouter.get('/tasks', userAuth, async (req, res) => {
-    try {
-        // Fetch tasks assigned to this specific employee
-        const tasks = await Task.find({ teacher: req.user._id })
-            .populate('school', 'schoolName address location')
-            .sort({ createdAt: -1 }); // Newest first
-
-        // Format the response to match what the React component expects
-        const formattedTasks = tasks.map(task => ({
-            id: task._id,
-            schoolName: task.school ? task.school.schoolName : "Unknown School",
-            location: task.school ? task.school.address : "Unknown Location",
-            daysAllotted: task.daysAllotted,
-            duration: task.duration,
-            timing: task.timing,
-            category: task.category || "General",
-            taskDescription: task.taskDescription,
-            status: task.status.toLowerCase(), // Ensure 'pending', 'accepted', 'rejected'
-            rejectReason: task.rejectReason
-        }));
-
-        res.status(200).json({ success: true, data: formattedTasks });
-    } catch (error) {
-        console.error("Fetch Tasks Error:", error);
-        res.status(500).json({ success: false, message: "Server error fetching tasks." });
-    }
-});
 
 // ==========================================
-// 17. LEAVE REQUEST STATUS
+// 16. LEAVE REQUEST STATUS
 // ==========================================
 employeeRouter.get('/leave-request/status', userAuth, async (req, res) => {
     try {
@@ -897,7 +882,7 @@ employeeRouter.get('/leave-request/status', userAuth, async (req, res) => {
 });
 
 // ==========================================
-// 18. SUBMIT LEAVE REQUEST
+// 17. SUBMIT LEAVE REQUEST
 // ==========================================
 employeeRouter.post('/leave-request', userAuth, async (req, res) => {
     try {
@@ -969,7 +954,7 @@ employeeRouter.post('/leave-request', userAuth, async (req, res) => {
 });
 
 // ==========================================
-// 19. REVOKE LEAVE REQUEST
+// 18. REVOKE LEAVE REQUEST
 // ==========================================
 employeeRouter.delete('/leave-request/:id', userAuth, async (req, res) => {
     try {
@@ -1024,7 +1009,7 @@ employeeRouter.delete('/leave-request/:id', userAuth, async (req, res) => {
 });
 
 // ==========================================
-// 20. GENERATE PRE-SIGNED URLS
+// 19. GENERATE PRE-SIGNED URLS
 // ==========================================
 employeeRouter.post("/media/generate-urls", userAuth, async (req, res) => {
     try {
@@ -1041,7 +1026,7 @@ employeeRouter.post("/media/generate-urls", userAuth, async (req, res) => {
         // 1. Create safe strings for the filename (replace spaces with dashes)
         const safeSchool = (metadata?.schoolName || "Unknown-School").replace(/[^a-zA-Z0-9]/g, '-');
         const safeBand = (metadata?.band || "Band").replace(/[^a-zA-Z0-9]/g, '-');
-        const dateStr = metadata?.eventDate || new Date().toISOString().split('T')[0];
+        const dateStr = metadata?.eventDate || getISTDateString();
 
         const uploadUrls = await Promise.all(files.map(async (file) => {
             // 2. Get the original extension (e.g., .mp4)
@@ -1083,7 +1068,7 @@ employeeRouter.post("/media/generate-urls", userAuth, async (req, res) => {
 });
 
 // ==========================================
-// 21. SAVE MEDIA LOG TO MONGODB (Updated for Thumbnails)
+// 20. SAVE MEDIA LOG TO MONGODB (Updated for Thumbnails)
 // ==========================================
 employeeRouter.post("/media/save-log", userAuth, async (req, res) => {
     try {
@@ -1161,7 +1146,7 @@ employeeRouter.post("/media/save-log", userAuth, async (req, res) => {
 });
 
 // ==========================================
-// 22. SEND MEDIA UPLOAD FAILURE EMAIL
+// 21. SEND MEDIA UPLOAD FAILURE EMAIL
 // ==========================================
 employeeRouter.post('/media/send-failure-email', userAuth, async (req, res) => {
     try {
@@ -1218,7 +1203,7 @@ employeeRouter.post('/media/send-failure-email', userAuth, async (req, res) => {
 });
 
 // ==========================================
-// 23. GET MEDIA GALLERY
+// 22. GET MEDIA GALLERY
 // ==========================================
 employeeRouter.get("/media", userAuth, async (req, res) => {
     try {
@@ -1245,7 +1230,7 @@ employeeRouter.get("/media", userAuth, async (req, res) => {
 });
 
 // ==========================================
-// 24. GENERATE DOWNLOAD URL
+// 23. GENERATE DOWNLOAD URL
 // ==========================================
 employeeRouter.post("/media/generate-download-url", userAuth, async (req, res) => {
     try {
@@ -1279,7 +1264,7 @@ employeeRouter.post("/media/generate-download-url", userAuth, async (req, res) =
 });
 
 // ==========================================
-// 25. DELETE SPECIFIC VIDEO FILE (Updated for Thumbnails)
+// 24. DELETE SPECIFIC VIDEO FILE (Updated for Thumbnails)
 // ==========================================
 employeeRouter.delete("/media/file/:fileId", userAuth, async (req, res) => {
     try {
@@ -1336,7 +1321,7 @@ employeeRouter.delete("/media/file/:fileId", userAuth, async (req, res) => {
 });
 
 // ==========================================
-// 26. INITIATE MULTIPART UPLOAD
+// 25. INITIATE MULTIPART UPLOAD
 // ==========================================
 employeeRouter.post('/media/multipart/create', userAuth, async (req, res) => {
     try {
@@ -1347,7 +1332,7 @@ employeeRouter.post('/media/multipart/create', userAuth, async (req, res) => {
         // SMART NAMING LOGIC
         const safeSchool = (metadata?.schoolName || "Unknown-School").replace(/[^a-zA-Z0-9]/g, '-');
         const safeBand = (metadata?.band || "Band").replace(/[^a-zA-Z0-9]/g, '-');
-        const dateStr = metadata?.eventDate || new Date().toISOString().split('T')[0];
+        const dateStr = metadata?.eventDate || getISTDateString();
 
         const fileExtension = path.extname(filename) || '.mp4';
         const uniqueString = crypto.randomBytes(3).toString('hex');
@@ -1372,7 +1357,7 @@ employeeRouter.post('/media/multipart/create', userAuth, async (req, res) => {
 });
 
 // ==========================================
-// 27. SIGN INDIVIDUAL CHUNKS
+// 26. SIGN INDIVIDUAL CHUNKS
 // ==========================================
 employeeRouter.post('/media/multipart/sign', userAuth, async (req, res) => {
     try {
@@ -1395,7 +1380,7 @@ employeeRouter.post('/media/multipart/sign', userAuth, async (req, res) => {
 });
 
 // ==========================================
-// 28. COMPLETE AND STITCH VIDEO
+// 27. COMPLETE AND STITCH VIDEO
 // ==========================================
 employeeRouter.post('/media/multipart/complete', userAuth, async (req, res) => {
     try {
@@ -1424,7 +1409,7 @@ employeeRouter.post('/media/multipart/complete', userAuth, async (req, res) => {
 });
 
 // ==========================================
-// 29. ABORT ON CANCELLATION
+// 28. ABORT ON CANCELLATION
 // ==========================================
 employeeRouter.post('/media/multipart/abort', userAuth, async (req, res) => {
     try {
@@ -1446,7 +1431,7 @@ employeeRouter.post('/media/multipart/abort', userAuth, async (req, res) => {
 });
 
 // ==========================================
-// 30. EMPLOYEES LEADERBOARD
+// 29. EMPLOYEES LEADERBOARD
 // ==========================================
 employeeRouter.get('/leaderboard', userAuth, async (req, res) => {
     try {
@@ -1466,7 +1451,7 @@ employeeRouter.get('/leaderboard', userAuth, async (req, res) => {
 });
 
 // ============================================================================
-// 31. MY PERSONAL GRAPH DATA
+// 30. MY PERSONAL GRAPH DATA
 // ============================================================================
 employeeRouter.get('/my-graph', userAuth, async (req, res) => {
     try {
@@ -1491,9 +1476,8 @@ employeeRouter.get('/my-graph', userAuth, async (req, res) => {
 
             // Format for the frontend chart
             graphData = records.map(record => {
-                const startStr = new Date(record.weekStartDate).toLocaleDateString('en-US', { month: 'short', day: '2-digit' });
-                const endStr = new Date(record.weekEndDate).toLocaleDateString('en-US', { month: 'short', day: '2-digit' });
-
+                const startStr = new Date(record.weekStartDate).toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', month: 'short', day: '2-digit' });
+                const endStr = new Date(record.weekEndDate).toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', month: 'short', day: '2-digit' });
                 return {
                     label: `${startStr} - ${endStr}`,
                     score: record.score
@@ -1546,7 +1530,7 @@ employeeRouter.get('/my-graph', userAuth, async (req, res) => {
 });
 
 // ============================================================================
-// 32. EMPLOYEE PROFILE PRESIGN URL
+// 31. EMPLOYEE PROFILE PRESIGN URL
 // ============================================================================
 employeeRouter.post("/profile-picture/presign", userAuth, async (req, res) => {
     try {
@@ -1592,7 +1576,7 @@ employeeRouter.post("/profile-picture/presign", userAuth, async (req, res) => {
 });
 
 // ============================================================================
-// 33. CHANGE PROFILE PICTURE OF EMPLOYEE
+// 32. CHANGE PROFILE PICTURE OF EMPLOYEE
 // ============================================================================
 employeeRouter.put("/profile-picture/confirm", userAuth, async (req, res) => {
     try {
@@ -1625,7 +1609,7 @@ employeeRouter.put("/profile-picture/confirm", userAuth, async (req, res) => {
 });
 
 // ============================================================================
-// 34. DELETE PROFILE PICTURE
+// 33. DELETE PROFILE PICTURE
 // ============================================================================
 employeeRouter.delete("/profile-picture", userAuth, async (req, res) => {
     try {

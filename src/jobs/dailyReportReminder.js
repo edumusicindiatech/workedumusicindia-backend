@@ -4,15 +4,8 @@ const DailyReports = require('../models/DailyReports');
 const Notification = require('../models/Notification'); // Adjust path
 const LeaveRequest = require('../models/LeaveRequest'); // <-- NEED THIS FOR LEAVE CHECK
 const { sendEmployeeMissingReportAlert, sendAdminMissingReportAlert } = require('../utils/emailService');
-
-// Helper to format date as YYYY-MM-DD (Local Time)
-const getTodayDateString = () => {
-    const today = new Date();
-    const year = today.getFullYear();
-    const month = String(today.getMonth() + 1).padStart(2, '0');
-    const day = String(today.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
-};
+const { getISTDateString, getISTDayOfWeek } = require('../utils/timeHelper'); // <-- ADDED HELPER
+const { canSendEmailToUser } = require('../utils/canSendEmailToUser'); // <-- ADDED HELPER
 
 const startDailyReportsCron = (io) => {
     // Schedule to run every day at 20:00 (8:00 PM) server time
@@ -20,17 +13,13 @@ const startDailyReportsCron = (io) => {
         console.log("🕒 [CRON] Starting 8:00 PM Daily Report Compliance Check...");
 
         try {
-            const todayStr = getTodayDateString();
-
             // --- SYNCED DATE & TIME LOGIC ---
-            const today = new Date();
-            const todayStart = new Date(today);
-            todayStart.setHours(0, 0, 0, 0);
-            const todayEnd = new Date(today);
-            todayEnd.setHours(23, 59, 59, 999);
+            const todayStr = getISTDateString();
+            const currentDayName = getISTDayOfWeek();
 
-            const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-            const currentDayName = days[today.getDay()]; // Gets 'Mon', 'Tue', etc. matching your schema
+            // Force strict IST boundaries for the database query by appending the offset
+            const todayStart = new Date(`${todayStr}T00:00:00.000+05:30`);
+            const todayEnd = new Date(`${todayStr}T23:59:59.999+05:30`);
 
             // --- SYNCED LEAVE CHECKER ---
             const activeLeaves = await LeaveRequest.find({
@@ -56,20 +45,16 @@ const startDailyReportsCron = (io) => {
                 for (const assign of employee.assignments) {
                     if (!assign.school) continue;
 
-                    // --- SYNCED DATE ISOLATION LOGIC ---
-                    // 1. Check Start Date
+                    // --- SYNCED DATE ISOLATION LOGIC (String Math) ---
                     const assignmentStartDate = assign.startDate ? new Date(assign.startDate) : assign._id.getTimestamp();
-                    const normalizedStartDate = new Date(assignmentStartDate);
-                    normalizedStartDate.setHours(0, 0, 0, 0);
+                    const assignStartStr = getISTDateString(assignmentStartDate);
 
-                    const isAfterStartDate = todayStart >= normalizedStartDate;
+                    const isAfterStartDate = todayStr >= assignStartStr;
 
-                    // 2. Check End Date
                     let isBeforeEndDate = true;
                     if (assign.endDate) {
-                        const normalizedEndDate = new Date(assign.endDate);
-                        normalizedEndDate.setHours(23, 59, 59, 999);
-                        isBeforeEndDate = todayStart <= normalizedEndDate;
+                        const assignEndStr = getISTDateString(new Date(assign.endDate));
+                        isBeforeEndDate = todayStr <= assignEndStr;
                     }
 
                     // 3. If the date is valid AND today is an allowed day, they are expected to work!
@@ -107,7 +92,11 @@ const startDailyReportsCron = (io) => {
                     });
 
                     if (io) io.to(employee._id.toString()).emit('new_notification', empNotif);
-                    await sendEmployeeMissingReportAlert(employee.email, employee.name, schoolName);
+
+                    // Added permissions check here
+                    if (await canSendEmailToUser(employee)) {
+                        await sendEmployeeMissingReportAlert(employee.email, employee.name, schoolName);
+                    }
 
                     // --- 5. CREATE ADMIN NOTIFICATIONS & EMAILS ---
                     for (const admin of admins) {
@@ -121,7 +110,11 @@ const startDailyReportsCron = (io) => {
                         });
 
                         if (io) io.to(admin._id.toString()).emit('new_notification', adminNotif);
-                        await sendAdminMissingReportAlert(admin.email, admin.name, employee.name, schoolName, location, scheduledTime);
+
+                        // Added permissions check here
+                        if (await canSendEmailToUser(admin)) {
+                            await sendAdminMissingReportAlert(admin.email, admin.name, employee.name, schoolName, location, scheduledTime);
+                        }
                     }
                 }
             }

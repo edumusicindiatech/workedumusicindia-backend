@@ -9,6 +9,7 @@ const userAuth = require('../middleware/userAuth');
 const adminAuth = require('../middleware/adminAuth');
 const exceljs = require('exceljs');
 const WeeklyProgress = require('../models/WeeklyProgress');
+const { getISTDateString } = require('../utils/timeHelper');
 
 // ============================================================================
 // 1. GET ALL EMPLOYEES (Now using stored scores from the User model)
@@ -65,7 +66,7 @@ progressRouter.get('/:teacherId/records', userAuth, adminAuth, async (req, res) 
 
         records.forEach(record => {
             const matchingMedia = mediaLogs.filter(m =>
-                m.eventDate && m.eventDate.toISOString().split('T')[0] === record?.date &&
+                m.eventDate && getISTDateString(new Date(m.eventDate)) === record?.date &&
                 m.school.toString() === record?.school?._id?.toString() &&
                 m.band === record?.band
             );
@@ -88,7 +89,7 @@ progressRouter.get('/:teacherId/records', userAuth, adminAuth, async (req, res) 
             ...leave,
             type: 'leave',
             // Use fromDate to determine which month folder it drops into
-            date: new Date(leave.fromDate).toISOString().split('T')[0]
+            date: getISTDateString(new Date(leave.fromDate))
         }));
 
         // Merge Attendance and Leaves
@@ -172,12 +173,12 @@ progressRouter.get('/:teacherId/export/:month', userAuth, adminAuth, async (req,
             categorizedStats[schoolName][bandName].Media += (record.mediaFilesCount || 0);
 
             worksheet.addRow({
-                date: new Date(record.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+                date: new Date(record.date).toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', month: 'short', day: 'numeric', year: 'numeric' }),
                 school: schoolName,
                 band: bandName,
                 status: record.status,
-                checkIn: record.checkInTime ? new Date(record.checkInTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--',
-                checkOut: record.checkOutTime ? new Date(record.checkOutTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--',
+                checkIn: record.checkInTime ? new Date(record.checkInTime).toLocaleTimeString('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' }) : '--',
+                checkOut: record.checkOutTime ? new Date(record.checkOutTime).toLocaleTimeString('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' }) : '--',
                 media: record.mediaFilesCount || 0,
                 notes: record.teacherNote || record.lateReason || ''
             });
@@ -185,8 +186,8 @@ progressRouter.get('/:teacherId/export/:month', userAuth, adminAuth, async (req,
 
         // 5. Process Leave Rows into the Main Table
         leaves.forEach(leave => {
-            const from = new Date(leave.fromDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-            const to = new Date(leave.toDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+            const from = new Date(leave.fromDate).toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', month: 'short', day: 'numeric' });
+            const to = new Date(leave.toDate).toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', month: 'short', day: 'numeric' });
             const dateStr = leave.fromDate === leave.toDate ? from : `${from} to ${to}`;
 
             worksheet.addRow({
@@ -313,8 +314,8 @@ progressRouter.get('/:teacherId/graph', userAuth, adminAuth, async (req, res) =>
             }).sort({ weekStartDate: 1 }); // Sort oldest to newest
 
             formattedData = weeklyData.map(record => {
-                const startDay = new Date(record.weekStartDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-                const endDay = new Date(record.weekEndDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                const startDay = new Date(record.weekStartDate).toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', month: 'short', day: 'numeric' });
+                const endDay = new Date(record.weekEndDate).toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', month: 'short', day: 'numeric' });
 
                 return {
                     label: `${startDay} - ${endDay}`,      // Used by Leaderboard Line Chart
@@ -338,7 +339,7 @@ progressRouter.get('/:teacherId/graph', userAuth, adminAuth, async (req, res) =>
             // Group the weekly scores by their Month, and calculate the average
             const monthlyStats = {};
             yearlyData.forEach(record => {
-                const monthName = new Date(record.weekStartDate).toLocaleDateString('en-US', { month: 'short' });
+                const monthName = new Date(record.weekStartDate).toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', month: 'short' });
 
                 if (!monthlyStats[monthName]) {
                     monthlyStats[monthName] = { totalScore: 0, count: 0 };
