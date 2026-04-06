@@ -4,7 +4,7 @@ const User = require('../models/User');
 const Attendance = require('../models/Attendance');
 const MediaLog = require('../models/MediaLog');
 const DailyReport = require('../models/DailyReports');
-const LeaveRequest = require('../models/LeaveRequest'); // <-- NEW IMPORT
+const LeaveRequest = require('../models/LeaveRequest');
 const userAuth = require('../middleware/userAuth');
 const adminAuth = require('../middleware/adminAuth');
 const exceljs = require('exceljs');
@@ -16,17 +16,14 @@ const { getISTDateString } = require('../utils/timeHelper');
 // ============================================================================
 progressRouter.get('/employees', userAuth, adminAuth, async (req, res) => {
     try {
-        // We no longer calculate on the fly. 
-        // We just fetch the pre-calculated scores saved by our Saturday Cron Job.
         const employees = await User.find({ role: 'Employee', isActive: true })
-            .select('name zone currentWeeklyScore currentWeeklyRank scoreTrend colorZone, profilePicture');
+            .select('name zone currentWeeklyScore currentWeeklyRank scoreTrend colorZone profilePicture');
 
-        // Format the data to match what your Frontend "ProgressReport" component expects
         const progressData = employees.map(emp => ({
             _id: emp._id,
             name: emp.name,
             zone: emp.zone,
-            score: emp.currentWeeklyScore, // This is the 25 or 15 you saw in the leaderboard
+            score: emp.currentWeeklyScore,
             currentWeeklyScore: emp.currentWeeklyScore,
             currentWeeklyRank: emp.currentWeeklyRank,
             scoreTrend: emp.scoreTrend,
@@ -34,7 +31,6 @@ progressRouter.get('/employees', userAuth, adminAuth, async (req, res) => {
             profilePicture: emp.profilePicture
         }));
 
-        // Sort them by rank (Rank 1 at the top)
         progressData.sort((a, b) => a.currentWeeklyRank - b.currentWeeklyRank);
 
         res.json({
@@ -55,7 +51,6 @@ progressRouter.get('/:teacherId/records', userAuth, adminAuth, async (req, res) 
     try {
         const teacherId = req.params.teacherId;
 
-        // 1. Fetch Attendance
         const records = await Attendance.find({ teacher: teacherId })
             .populate('school', 'schoolName address')
             .sort({ date: -1 })
@@ -78,21 +73,17 @@ progressRouter.get('/:teacherId/records', userAuth, adminAuth, async (req, res) 
             }
         });
 
-        // 2. Fetch Approved Leaves
         const leaveRequests = await LeaveRequest.find({
             employee: teacherId,
             status: 'approved'
         }).lean();
 
-        // 3. Format Leaves so frontend can group them by month
         const formattedLeaves = leaveRequests.map(leave => ({
             ...leave,
             type: 'leave',
-            // Use fromDate to determine which month folder it drops into
             date: getISTDateString(new Date(leave.fromDate))
         }));
 
-        // Merge Attendance and Leaves
         const allData = [...records, ...formattedLeaves];
 
         res.json({ success: true, data: allData });
@@ -112,27 +103,25 @@ progressRouter.get('/:teacherId/export/:month', userAuth, adminAuth, async (req,
 
         if (!teacher) return res.status(404).json({ success: false, message: 'Teacher not found' });
 
-        // 1. Fetch regular attendance records
         const records = await Attendance.find({
             teacher: teacherId,
             date: { $regex: `^${month}` }
         }).populate('school', 'schoolName').sort({ date: 1 });
 
-        // 2. BULLETPROOF LEAVE FETCHING (Checks overlap and strict lowercase 'approved')
-        const monthStart = new Date(`${month}-01T00:00:00.000Z`);
+        // 🚨 CRITICAL FIX: Replaced 'Z' with '+05:30' for accurate IST boundaries
+        const monthStart = new Date(`${month}-01T00:00:00.000+05:30`);
         const nextMonth = new Date(monthStart);
         nextMonth.setMonth(nextMonth.getMonth() + 1);
 
         const leaves = await LeaveRequest.find({
-            $or: [{ teacher: teacherId }, { employee: teacherId }], // Catch either field name
-            status: 'approved', // MUST BE LOWERCASE based on your schema enum!
+            $or: [{ teacher: teacherId }, { employee: teacherId }],
+            status: 'approved',
             $and: [
-                { fromDate: { $lt: nextMonth } }, // Started before the end of the month
-                { toDate: { $gte: monthStart } }  // Ended after the start of the month
+                { fromDate: { $lt: nextMonth } },
+                { toDate: { $gte: monthStart } }
             ]
         }).sort({ fromDate: 1 });
 
-        // 3. Setup Workbook
         const workbook = new exceljs.Workbook();
         const worksheet = workbook.addWorksheet(`${month} Report`);
 
@@ -147,14 +136,12 @@ progressRouter.get('/:teacherId/export/:month', userAuth, adminAuth, async (req,
             { header: 'Notes/Reason', key: 'notes', width: 45 }
         ];
 
-        // Format Top Header Row (Dark Slate & White Text)
         worksheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
         worksheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0F172A' } };
         worksheet.getRow(1).alignment = { horizontal: 'center' };
 
         const categorizedStats = {};
 
-        // 4. Process Standard Attendance Rows
         records.forEach(record => {
             const schoolName = record.school?.schoolName || 'Unassigned';
             const bandName = record.band || 'General';
@@ -184,7 +171,6 @@ progressRouter.get('/:teacherId/export/:month', userAuth, adminAuth, async (req,
             });
         });
 
-        // 5. Process Leave Rows into the Main Table
         leaves.forEach(leave => {
             const from = new Date(leave.fromDate).toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', month: 'short', day: 'numeric' });
             const to = new Date(leave.toDate).toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', month: 'short', day: 'numeric' });
@@ -208,31 +194,27 @@ progressRouter.get('/:teacherId/export/:month', userAuth, adminAuth, async (req,
         worksheet.addRow([]);
         worksheet.addRow([]);
 
-        // Main Summary Title Banner (Indigo Background / White Bold Text)
         const summaryHeaderRow = worksheet.addRow(['📊 ATTENDANCE SUMMARY BY SCHOOL & CATEGORY']);
         summaryHeaderRow.font = { bold: true, size: 14, color: { argb: 'FFFFFFFF' } };
-        summaryHeaderRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4338CA' } }; // Indigo 700
+        summaryHeaderRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4338CA' } };
         summaryHeaderRow.alignment = { horizontal: 'center', vertical: 'middle' };
         worksheet.mergeCells(`A${summaryHeaderRow.number}:H${summaryHeaderRow.number}`);
         worksheet.getRow(summaryHeaderRow.number).height = 30;
 
-        // Loop Schools & Bands
         for (const school in categorizedStats) {
             worksheet.addRow([]);
 
-            // School Name Banner (Emerald Green Background / White Bold Text)
             const schoolRow = worksheet.addRow([`🏫 ${school}`]);
             schoolRow.font = { bold: true, size: 12, color: { argb: 'FFFFFFFF' } };
-            schoolRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF059669' } }; // Emerald 600
+            schoolRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF059669' } };
             worksheet.mergeCells(`A${schoolRow.number}:H${schoolRow.number}`);
 
             for (const band in categorizedStats[school]) {
                 const stats = categorizedStats[school][band];
 
-                // Band Sub-Header (Bright Yellow Background / Black Bold Text)
                 const bandRow = worksheet.addRow(['', `📌 ${band}`]);
                 bandRow.font = { bold: true, italic: true, color: { argb: 'FF000000' } };
-                bandRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEF08A' } }; // Yellow 200
+                bandRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEF08A' } };
                 worksheet.mergeCells(`B${bandRow.number}:H${bandRow.number}`);
 
                 worksheet.addRow(['', '', `✅ Present: ${stats.Present}`]);
@@ -243,16 +225,12 @@ progressRouter.get('/:teacherId/export/:month', userAuth, adminAuth, async (req,
             }
         }
 
-        // ---------------------------------------------------------
-        // LEAVES SUMMARY SECTION (Vibrant Red)
-        // ---------------------------------------------------------
         if (leaves.length > 0) {
             worksheet.addRow([]);
 
-            // Leaves Header Banner (Rose/Red Background / White Bold Text)
             const leaveRow = worksheet.addRow(['🌴 APPROVED LEAVES SUMMARY']);
             leaveRow.font = { bold: true, size: 12, color: { argb: 'FFFFFFFF' } };
-            leaveRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE11D48' } }; // Rose 600
+            leaveRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE11D48' } };
             worksheet.mergeCells(`A${leaveRow.number}:H${leaveRow.number}`);
 
             worksheet.addRow(['', '', `🗓️ Total Approved Requests: ${leaves.length}`]);
@@ -287,8 +265,6 @@ progressRouter.get('/:teacherId/export/:month', userAuth, adminAuth, async (req,
 progressRouter.get('/:teacherId/graph', userAuth, adminAuth, async (req, res) => {
     try {
         const { teacherId } = req.params;
-
-        // The Leaderboard sends 'period' and 'date'. ProgressReport just sends 'month'.
         const period = req.query.period || 'weekly';
         const dateTarget = req.query.date || req.query.month;
 
@@ -299,46 +275,44 @@ progressRouter.get('/:teacherId/graph', userAuth, adminAuth, async (req, res) =>
         let formattedData = [];
 
         if (period === 'weekly') {
-            // Expected dateTarget: "YYYY-MM" (e.g., "2026-03")
-            const monthStart = new Date(`${dateTarget}-01T00:00:00.000Z`);
+            // 🚨 CRITICAL FIX: Replaced 'Z' with '+05:30' for accurate IST boundaries
+            const monthStart = new Date(`${dateTarget}-01T00:00:00.000+05:30`);
             const nextMonth = new Date(monthStart);
             nextMonth.setMonth(nextMonth.getMonth() + 1);
 
-            // Fetch records where any part of the week touches the target month
             const weeklyData = await WeeklyProgress.find({
                 teacher: teacherId,
                 $or: [
                     { weekStartDate: { $gte: monthStart, $lt: nextMonth } },
                     { weekEndDate: { $gte: monthStart, $lt: nextMonth } }
                 ]
-            }).sort({ weekStartDate: 1 }); // Sort oldest to newest
+            }).sort({ weekStartDate: 1 });
 
             formattedData = weeklyData.map(record => {
                 const startDay = new Date(record.weekStartDate).toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', month: 'short', day: 'numeric' });
                 const endDay = new Date(record.weekEndDate).toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', month: 'short', day: 'numeric' });
 
                 return {
-                    label: `${startDay} - ${endDay}`,      // Used by Leaderboard Line Chart
-                    weekLabel: `${startDay} - ${endDay}`,  // Used by Progress Report Bar Chart
+                    label: `${startDay} - ${endDay}`,
+                    weekLabel: `${startDay} - ${endDay}`,
                     score: record.score
                 };
             });
 
         } else if (period === 'monthly') {
-            // Expected dateTarget: "YYYY" (e.g., "2026")
-            const yearStart = new Date(`${dateTarget}-01-01T00:00:00.000Z`);
+            // 🚨 CRITICAL FIX: Replaced 'Z' with '+05:30' for accurate IST boundaries
+            const yearStart = new Date(`${dateTarget}-01-01T00:00:00.000+05:30`);
             const nextYear = new Date(yearStart);
             nextYear.setFullYear(nextYear.getFullYear() + 1);
 
-            // Fetch ALL weeks in the target year
             const yearlyData = await WeeklyProgress.find({
                 teacher: teacherId,
                 weekStartDate: { $gte: yearStart, $lt: nextYear }
             }).sort({ weekStartDate: 1 });
 
-            // Group the weekly scores by their Month, and calculate the average
             const monthlyStats = {};
             yearlyData.forEach(record => {
+                // Timezone safe extraction
                 const monthName = new Date(record.weekStartDate).toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', month: 'short' });
 
                 if (!monthlyStats[monthName]) {
@@ -348,14 +322,12 @@ progressRouter.get('/:teacherId/graph', userAuth, adminAuth, async (req, res) =>
                 monthlyStats[monthName].count += 1;
             });
 
-            // Ensure chronological order for the Line Chart (Jan to Dec)
             const monthsOrder = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
             monthsOrder.forEach(month => {
                 if (monthlyStats[month]) {
                     formattedData.push({
-                        label: month, // e.g., "Jan", "Feb"
-                        // Calculate the average score for that month
+                        label: month,
                         score: Math.round(monthlyStats[month].totalScore / monthlyStats[month].count)
                     });
                 }
@@ -368,6 +340,5 @@ progressRouter.get('/:teacherId/graph', userAuth, adminAuth, async (req, res) =>
         res.status(500).json({ success: false, message: "Failed to fetch graph data" });
     }
 });
-
 
 module.exports = progressRouter;

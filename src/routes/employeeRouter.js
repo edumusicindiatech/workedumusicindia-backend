@@ -44,24 +44,24 @@ const employeeRouter = express.Router();
 
 // Convert "08:00 AM" to today's Date object for time math
 const getScheduledDate = (timeStr) => {
-    const now = new Date();
-    // Split by space to check for AM/PM
+    const currentISTDate = getISTDateString(); // "YYYY-MM-DD"
     const parts = timeStr.split(' ');
     const time = parts[0];
-    const modifier = parts[1]; // Will be undefined for "08:00"
+    const modifier = parts[1];
 
     let [hours, minutes] = time.split(':');
     hours = parseInt(hours, 10);
 
     if (modifier) {
-        // Handle 12-hour format logic
         if (hours === 12 && modifier === 'AM') hours = 0;
         if (hours !== 12 && modifier === 'PM') hours += 12;
     }
-    // If no modifier exists (24h format), we just use the hours as they are!
 
-    now.setHours(hours, parseInt(minutes, 10), 0, 0);
-    return now;
+    // Pad hours to ensure 2 digits (e.g., "08")
+    const hoursStr = hours.toString().padStart(2, '0');
+
+    // Create strict IST date
+    return new Date(`${currentISTDate}T${hoursStr}:${minutes}:00.000+05:30`);
 };
 
 // Handles In-App Notifications & Sockets, and returns the list of admins 
@@ -535,10 +535,10 @@ employeeRouter.get('/assigned-schools', userAuth, async (req, res) => {
     try {
         const employeeId = req.user._id;
 
-        // Calculate the date 30 days ago
+        // Calculate the date 30 days ago safely in IST
         const thirtyDaysAgo = new Date();
         thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-        const thirtyDaysAgoString = thirtyDaysAgo.toISOString().split('T')[0];
+        const thirtyDaysAgoString = getISTDateString(thirtyDaysAgo); // FIXED
 
         const user = await User.findById(employeeId).populate('assignments.school');
         if (!user) return res.status(404).json({ success: false, message: "User not found" });
@@ -615,21 +615,25 @@ employeeRouter.get('/assigned-schools', userAuth, async (req, res) => {
 // ==========================================
 employeeRouter.post('/events', userAuth, async (req, res) => {
     try {
-        // Assume you have an Event model. If not, create one!
+        const { startDate, endDate, ...restBody } = req.body;
+
+        // --- 🚨 FIXED: IST DATE NORMALIZATION ---
+        const istStartDate = startDate ? new Date(`${startDate}T00:00:00.000+05:30`) : null;
+        const istEndDate = endDate ? new Date(`${endDate}T23:59:59.999+05:30`) : null;
+
         const event = await Event.create({
             teacher: req.user._id,
-            ...req.body
+            startDate: istStartDate || startDate,
+            endDate: istEndDate || endDate,
+            ...restBody
         });
 
-        // Fetch employee details to send in email
         const employeeName = req.user.name;
 
-        // --- REAL-TIME SOCKET & NOTIFICATION EMIT TO ADMINS ---
         if (req.io) {
             const admins = await User.find({ role: { $in: ['Admin', 'SuperAdmin'] } });
 
             await Promise.all(admins.map(async (admin) => {
-                // Create Notification in DB
                 const adminNotif = await Notification.create({
                     recipient: admin._id,
                     title: "New Event Logged",
@@ -637,17 +641,13 @@ employeeRouter.post('/events', userAuth, async (req, res) => {
                     type: "System"
                 });
 
-                // Trigger Badge/Sound
                 req.io.to(admin._id.toString()).emit('new_notification', adminNotif);
-
-                // Trigger the Live Event update in the UI
                 req.io.to(admin._id.toString()).emit('new_event', event);
 
-                // Send the Email
                 await sendAdminNewEventAlert(
                     admin.email, admin.name, employeeName,
                     req.body.schoolName, req.body.categoryName,
-                    req.body.startDate, req.body.endDate,
+                    req.body.startDate, req.body.endDate, // Sending original strings is fine for the email template
                     req.body.timeFrom, req.body.timeTo, req.body.description
                 );
             }));
@@ -655,6 +655,7 @@ employeeRouter.post('/events', userAuth, async (req, res) => {
 
         res.status(201).json({ success: true, data: event });
     } catch (error) {
+        console.error("Event Create Error:", error);
         res.status(500).json({ success: false, message: "Error saving event." });
     }
 });
@@ -666,14 +667,22 @@ employeeRouter.post('/media', userAuth, async (req, res) => {
     try {
         const { schoolId, band, mediaType, eventDate, eventContext, files } = req.body;
 
+        // --- 🚨 FIXED: IST DATE NORMALIZATION ---
+        const finalEventDate = eventDate ? new Date(`${eventDate}T00:00:00.000+05:30`) : new Date();
+
         const newMediaLog = await MediaLog.create({
             teacher: req.user._id,
             school: schoolId,
-            band, mediaType, eventDate, eventContext, files
+            band,
+            mediaType,
+            eventDate: finalEventDate,
+            eventContext,
+            files
         });
 
         res.status(200).json({ success: true, message: "Media uploaded successfully", data: newMediaLog });
     } catch (error) {
+        console.error("Media Upload Error:", error);
         res.status(500).json({ success: false, message: "Server error uploading media." });
     }
 });
@@ -868,8 +877,9 @@ employeeRouter.get('/leave-request/status', userAuth, async (req, res) => {
         const formattedData = {
             id: latestRequest._id,
             status: latestRequest.status,
-            fromDate: new Date(latestRequest.fromDate).toISOString().split('T')[0],
-            toDate: new Date(latestRequest.toDate).toISOString().split('T')[0],
+            // FIXED: Converts DB object back to string using IST to prevent day-shifting
+            fromDate: getISTDateString(new Date(latestRequest.fromDate)),
+            toDate: getISTDateString(new Date(latestRequest.toDate)),
             reason: latestRequest.reason,
             adminRemarks: latestRequest.adminRemarks
         };
@@ -901,36 +911,37 @@ employeeRouter.post('/leave-request', userAuth, async (req, res) => {
             return res.status(400).json({ success: false, message: "You already have a pending leave request." });
         }
 
+        // IST DATE NORMALIZATION
+        const istFromDate = new Date(`${fromDate}T00:00:00.000+05:30`);
+        const istToDate = new Date(`${toDate}T23:59:59.999+05:30`);
+
+        if (isNaN(istFromDate.getTime()) || isNaN(istToDate.getTime())) {
+            return res.status(400).json({ success: false, message: "Invalid date format." });
+        }
+
         const newLeaveRequest = new LeaveRequest({
             employee: req.user._id,
-            fromDate,
-            toDate,
+            fromDate: istFromDate,
+            toDate: istToDate,
             reason
         });
 
         await newLeaveRequest.save();
 
-        const formattedFromDate = new Date(fromDate).toDateString();
-        const formattedToDate = new Date(toDate).toDateString();
+        // --- 🚨 FIXED: TIMEZONE SAFE STRING CONVERSION ---
+        const dateOptions = { timeZone: 'Asia/Kolkata', month: 'short', day: '2-digit', year: 'numeric' };
+        const formattedFromDate = istFromDate.toLocaleDateString('en-US', dateOptions);
+        const formattedToDate = istToDate.toLocaleDateString('en-US', dateOptions);
 
-        // 1. Send In-App Notifications (Real-time to Admins ONLY via your helper)
+        // 1. Send In-App Notifications
         const title = 'New Leave Request';
         const message = `${req.user.name} has requested leave from ${formattedFromDate} to ${formattedToDate}.`;
-
-        // This returns the array of admins so we can use it for emails
         const admins = await notifyAdminsInApp(req, title, message, 'Leave');
 
-        // 2. Send Emails to the returned Admins sequentially
+        // 2. Send Emails
         for (const admin of admins) {
             if (await canSendEmailToUser(admin)) {
-                await sendLeaveRequestEmailToAdmin(
-                    admin.email,
-                    admin.name,
-                    req.user.name,
-                    formattedFromDate,
-                    formattedToDate,
-                    reason
-                );
+                await sendLeaveRequestEmailToAdmin(admin.email, admin.name, req.user.name, formattedFromDate, formattedToDate, reason);
             }
         }
 
@@ -978,17 +989,18 @@ employeeRouter.delete('/leave-request/:id', userAuth, async (req, res) => {
 
         await LeaveRequest.findByIdAndDelete(leaveRequestId);
 
-        const formattedFromDate = new Date(leaveRequest.fromDate).toDateString();
-        const formattedToDate = new Date(leaveRequest.toDate).toDateString();
+        // --- 🚨 FIXED: TIMEZONE SAFE STRING CONVERSION ---
+        const dateOptions = { timeZone: 'Asia/Kolkata', month: 'short', day: '2-digit', year: 'numeric' };
+        const formattedFromDate = new Date(leaveRequest.fromDate).toLocaleDateString('en-US', dateOptions);
+        const formattedToDate = new Date(leaveRequest.toDate).toLocaleDateString('en-US', dateOptions);
 
-        // 1. Send In-App Notifications (Real-time to Admins ONLY via your helper)
+        // 1. Send In-App Notifications
         const title = 'Leave Request Cancelled';
         const message = `${req.user.name} has cancelled their leave request (${formattedFromDate} to ${formattedToDate}).`;
 
-        // You can use 'Deletion' or 'Leave' depending on what icon you want to show
         const admins = await notifyAdminsInApp(req, title, message, 'Deletion');
 
-        // 2. Send Emails to the returned Admins sequentially
+        // 2. Send Emails
         for (const admin of admins) {
             if (await canSendEmailToUser(admin)) {
                 await sendLeaveRevokedEmailToAdmin(
@@ -1076,7 +1088,7 @@ employeeRouter.post("/media/save-log", userAuth, async (req, res) => {
         const { schoolId, band, eventName, eventDate, studentsCount, description, uploadedFiles, thumbnails } = req.body;
 
         const mediaType = eventName ? 'Special Event' : 'Regular Visit';
-        const finalEventDate = eventDate ? new Date(eventDate) : new Date();
+        const finalEventDate = eventDate ? new Date(`${eventDate}T00:00:00.000+05:30`) : new Date();
 
         // --- INSTANT BASE64 THUMBNAIL UPLOAD ---
         let parsedThumbnails = [];
@@ -1210,16 +1222,16 @@ employeeRouter.get("/media", userAuth, async (req, res) => {
         // Default to current year if none provided
         const year = parseInt(req.query.year) || new Date().getFullYear();
 
-        // Set date boundaries for the query
-        const startDate = new Date(year, 0, 1); // Jan 1st of requested year
-        const endDate = new Date(year + 1, 0, 1); // Jan 1st of next year
+        // FIXED: Set strict IST boundaries for the query
+        const startDate = new Date(`${year}-01-01T00:00:00.000+05:30`);
+        const endDate = new Date(`${year + 1}-01-01T00:00:00.000+05:30`);
 
         const mediaLogs = await MediaLog.find({
             teacher: req.user._id,
             eventDate: { $gte: startDate, $lt: endDate }
         })
-            .populate('school', 'schoolName') // Fetch the actual school name
-            .sort({ eventDate: -1 }); // Newest first
+            .populate('school', 'schoolName')
+            .sort({ eventDate: -1 });
 
         res.status(200).json({ success: true, data: mediaLogs });
 
@@ -1455,26 +1467,25 @@ employeeRouter.get('/leaderboard', userAuth, async (req, res) => {
 // ============================================================================
 employeeRouter.get('/my-graph', userAuth, async (req, res) => {
     try {
-        const employeeId = req.user._id; // Gets the ID from your userAuth middleware
+        const employeeId = req.user._id;
         const { period, date } = req.query;
 
         let graphData = [];
 
         if (period === 'weekly') {
-            // 'date' comes in as 'YYYY-MM' (e.g., '2026-03')
             const [year, month] = date.split('-');
+            const paddedMonth = month.toString().padStart(2, '0');
+            const endDay = new Date(year, month, 0).getDate(); // Safe trick to get max days in month
 
-            // Define the start and end of that specific month
-            const startDate = new Date(year, month - 1, 1);
-            const endDate = new Date(year, month, 0, 23, 59, 59);
+            // FIXED: Strict IST bounds
+            const startDate = new Date(`${year}-${paddedMonth}-01T00:00:00.000+05:30`);
+            const endDate = new Date(`${year}-${paddedMonth}-${endDay}T23:59:59.999+05:30`);
 
-            // Fetch all weekly records for this employee within this month
             const records = await WeeklyProgress.find({
                 teacher: employeeId,
                 weekStartDate: { $gte: startDate, $lte: endDate }
             }).sort({ weekStartDate: 1 });
 
-            // Format for the frontend chart
             graphData = records.map(record => {
                 const startStr = new Date(record.weekStartDate).toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', month: 'short', day: '2-digit' });
                 const endStr = new Date(record.weekEndDate).toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', month: 'short', day: '2-digit' });
@@ -1485,21 +1496,21 @@ employeeRouter.get('/my-graph', userAuth, async (req, res) => {
             });
 
         } else if (period === 'monthly') {
-            // 'date' comes in as 'YYYY' (e.g., '2026')
             const year = parseInt(date);
-            const startDate = new Date(year, 0, 1);
-            const endDate = new Date(year, 11, 31, 23, 59, 59);
 
-            // Fetch ALL records for the whole year
+            // FIXED: Strict IST bounds
+            const startDate = new Date(`${year}-01-01T00:00:00.000+05:30`);
+            const endDate = new Date(`${year}-12-31T23:59:59.999+05:30`);
+
             const records = await WeeklyProgress.find({
                 teacher: employeeId,
                 weekStartDate: { $gte: startDate, $lte: endDate }
             }).sort({ weekStartDate: 1 });
 
-            // Group them by month to calculate the average score per month
             const monthlyData = {};
             records.forEach(record => {
-                const monthName = new Date(record.weekStartDate).toLocaleString('en-US', { month: 'short' }); // "Jan", "Feb"
+                // FIXED: Force IST timezone so boundary weeks don't get assigned to the previous month!
+                const monthName = new Date(record.weekStartDate).toLocaleString('en-US', { timeZone: 'Asia/Kolkata', month: 'short' });
 
                 if (!monthlyData[monthName]) {
                     monthlyData[monthName] = { totalScore: 0, count: 0 };
@@ -1508,7 +1519,6 @@ employeeRouter.get('/my-graph', userAuth, async (req, res) => {
                 monthlyData[monthName].count += 1;
             });
 
-            // Format into an array in correct month order
             const monthOrder = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
             monthOrder.forEach(month => {
