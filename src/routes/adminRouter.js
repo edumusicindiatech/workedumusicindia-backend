@@ -665,14 +665,16 @@ adminRouter.delete('/employees/:empId/assignments/:assignmentId', userAuth, admi
 adminRouter.put('/employees/:id', userAuth, adminAuth, async (req, res) => {
     try {
         const { id } = req.params;
-        const { name, email, phone, zone, password } = req.body;
+        const { name, email, phone, zone, password, role } = req.body;
 
         const targetUser = await User.findById(id);
         if (!targetUser) return res.status(404).json({ success: false, message: "User not found" });
 
+        // Existing protection: Admins cannot edit SuperAdmins, and standard Admins cannot edit other Admins.
         if (req.user.role === 'Admin' && ['Admin', 'SuperAdmin'].includes(targetUser.role)) {
             return res.status(403).json({ success: false, message: "Permission denied. Admins cannot edit other administrators." });
         }
+
         if (email && email !== targetUser.email) {
             const existingUser = await User.findOne({ email });
             if (existingUser) {
@@ -683,19 +685,33 @@ adminRouter.put('/employees/:id', userAuth, adminAuth, async (req, res) => {
             }
             targetUser.email = email;
         }
+
         if (name) targetUser.name = name;
-        if (email) targetUser.email = email;
         if (phone) targetUser.mobile = phone;
         if (zone) targetUser.zone = zone;
+
+        // --- SUPERADMIN ONLY ROLE UPDATE LOGIC ---
+        // Only attempt to update if the role provided is different from the current role
+        if (role && role !== targetUser.role) {
+            if (req.user.role !== 'SuperAdmin') {
+                return res.status(403).json({
+                    success: false,
+                    message: "Permission denied. Only SuperAdmins can change account roles."
+                });
+            }
+
+            // Ensure the role provided is valid
+            if (['Employee', 'Admin'].includes(role)) {
+                targetUser.role = role;
+            }
+        }
+
         if (password && password.trim() !== "") {
             targetUser.password = await bcrypt.hash(password, 10);
 
-            // --- NEW DEVICE UNBIND LOGIC ---
-            // Because the admin is resetting the password (likely due to a lost phone),
-            // we wipe the old device from memory and force the First Login flow again.
+            // Device unbind logic
             targetUser.isFirstLogin = true;
             targetUser.deviceId = null;
-            // -------------------------------
         }
 
         await targetUser.save();
@@ -743,7 +759,7 @@ adminRouter.put('/employees/:id', userAuth, adminAuth, async (req, res) => {
         }));
 
         const data = await User.findById(id).select('-password').populate('assignments.school');
-        res.status(200).json({ success: true, message: "Profile updated and parties notified.", data });
+        res.status(200).json({ success: true, message: "Profile updated successfully.", data });
 
     } catch (error) {
         console.error("Update Profile Error:", error);
