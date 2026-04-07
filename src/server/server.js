@@ -37,8 +37,31 @@ const io = new Server(server, {
 });
 
 io.on('connection', (socket) => {
+    // --- EXISTING ROOM LOGIC ---
     socket.on('join_room', (userId) => {
         socket.join(userId);
+    });
+
+    // --- NEW: ADMIN LIVE TRACKING ROOM ---
+    socket.on('join_admin_room', () => {
+        socket.join('admin_live_tracking');
+        console.log(`Admin connected to live tracking: ${socket.id}`);
+    });
+
+    // --- NEW: EMPLOYEE LOCATION EMITTER ---
+    socket.on('update_live_location', (data) => {
+        const { employeeId, lat, lng } = data;
+
+        // Ensure we have valid data before broadcasting
+        if (employeeId && lat && lng) {
+            // Broadcast exactly to the admins listening in the room
+            io.to('admin_live_tracking').emit('employee_location_changed', {
+                employeeId,
+                lat,
+                lng,
+                timestamp: new Date()
+            });
+        }
     });
 });
 

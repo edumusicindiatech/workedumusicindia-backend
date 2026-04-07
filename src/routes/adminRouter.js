@@ -111,7 +111,7 @@ adminRouter.post('/create-employee', userAuth, adminAuth, async (req, res) => {
         const currentYear = new Date().getFullYear();
         const randomNum = Math.floor(1000 + Math.random() * 9000);
         const generatedEmployeeId = `EMP-${currentYear}-${randomNum}`;
-        const defaultPassword = "Welcome123!";
+        const defaultPassword = "Welcome123";
         const hashedDefaultPassword = await bcrypt.hash(defaultPassword, 10);
 
         const employeeUser = await User.findOneAndUpdate(
