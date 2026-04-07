@@ -195,7 +195,7 @@ employeeRouter.get('/my-schedule', userAuth, async (req, res) => {
 });
 
 // ==========================================
-// 4. CHECK-IN (100m Geofence)
+// 4. CHECK-IN (300m Geofence)
 // ==========================================
 employeeRouter.post('/check-in', userAuth, async (req, res) => {
     try {
@@ -207,7 +207,7 @@ employeeRouter.post('/check-in', userAuth, async (req, res) => {
             location: {
                 $nearSphere: {
                     $geometry: { type: "Point", coordinates: [parseFloat(longitude), parseFloat(latitude)] },
-                    $maxDistance: 200
+                    $maxDistance: 300
                 }
             }
         });
@@ -254,7 +254,7 @@ employeeRouter.post('/check-in', userAuth, async (req, res) => {
 });
 
 // ==========================================
-// 5. CHECK-OUT (100m Geofence & Overtime)
+// 5. CHECK-OUT (300m Geofence & Overtime)
 // ==========================================
 employeeRouter.post('/check-out', userAuth, async (req, res) => {
     try {
@@ -266,7 +266,7 @@ employeeRouter.post('/check-out', userAuth, async (req, res) => {
             location: {
                 $nearSphere: {
                     $geometry: { type: "Point", coordinates: [parseFloat(longitude), parseFloat(latitude)] },
-                    $maxDistance: 200
+                    $maxDistance: 300
                 }
             }
         });
