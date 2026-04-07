@@ -32,13 +32,16 @@ const fetchDailyFeedData = async (status) => {
     // ==========================================
     const actualAttendance = await Attendance.find({ date: dateString })
         .populate('teacher', 'name employeeId zone mobile profilePicture')
-        .populate('school', 'schoolName address');
+        // THE FIX: Added location and coordinate fields so distance tracking works
+        .populate('school', 'schoolName address location coordinates latitude longitude');
 
     const assignedUsers = await User.find({
         role: 'Employee',
         isActive: true,
         'assignments.allowedDays': currentDayName
-    }).populate('assignments.school', 'schoolName address');
+    })
+        // THE FIX: Added location and coordinate fields for pending/unstarted shifts
+        .populate('assignments.school', 'schoolName address location coordinates latitude longitude');
 
     // ==========================================
     // 3. THE MERGING ENGINE (With Start & End Date Fixes)
