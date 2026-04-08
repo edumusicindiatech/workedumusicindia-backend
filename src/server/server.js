@@ -221,7 +221,12 @@ app.get('/health', (req, res) => {
 
 app.use(cookieParser());
 app.use(cors({
-    origin: true, // This tells the server to let anyone in temporarily
+    origin: [
+        'http://localhost:5173',
+        process.env.FRONTEND_URL,
+        'https://www.workedumusicindia.com',
+        'https://workedumusicindia.com'
+    ],
     credentials: true
 }));
 app.use(express.json({ limit: '30mb' }));
