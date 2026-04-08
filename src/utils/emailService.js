@@ -39,6 +39,7 @@ const { getVideoDeletedTemplate } = require('../templates/shared/getMediaTemplat
 const getWeeklyScoreEmailTemplate = require('../templates/employee/employeeWeeklyScoreEmail');
 const { getAdminTopPerformersTemplate } = require('../templates/admin/adminWeeklyTopPerformersEmail');
 const getNewLearningMediaTemplate = require('../templates/admin/adminNewLearningMediaUpload');
+const getSOSEmergencyTemplate = require('../templates/shared/sosEmergencyTemplate');
 
 require('dotenv').config();
 
@@ -623,6 +624,24 @@ const sendNewLearningVideoEmailToEmployee = async (email, employeeName, adminNam
     }
 };
 
+const sendSOSEmergencyEmail = async (email, recipientName, senderName, lat, lng) => {
+    try {
+        const html = getSOSEmergencyTemplate(recipientName, senderName, lat, lng);
+
+        await transporter.sendMail({
+            from: `"EMERGENCY ALERTS" <${process.env.EMAIL_FROM}>`,
+            to: email,
+            subject: `🚨 URGENT SOS ALERT: ${senderName} triggered an emergency!`,
+            html: html,
+            priority: 'high' // Flags as high importance in email clients
+        });
+        return true;
+    } catch (error) {
+        console.error(`Failed to send SOS email to ${email}:`, error);
+        return false;
+    }
+};
+
 module.exports = {
     sendAdminWelcomeEmail,
     sendEmployeeWelcomeEmail,
@@ -667,6 +686,6 @@ module.exports = {
     sendVideoDeletedEmailToEmployee,
     sendWeeklyScoreToEmployee,
     sendTopPerformersToAdmin,
-    sendNewLearningVideoEmailToEmployee
-
+    sendNewLearningVideoEmailToEmployee,
+    sendSOSEmergencyEmail
 };
