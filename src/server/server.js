@@ -209,13 +209,6 @@ io.on('connection', (socket) => {
     });
 });
 
-// Initialize Cron Jobs
-startShiftWarningCron(io);
-startDailyReportsCron(io);
-startAutoAbsentCron(io);
-startCheckoutReminderCron(io);
-startKeepAliveCron();
-startWeeklyScoreCron(io);
 
 app.use((req, res, next) => {
     req.io = io;
@@ -251,7 +244,17 @@ app.use('/api/learning', LearningRouter);
 const PORT = process.env.PORT || 5000;
 
 connectDB().then(() => {
-    server.listen(PORT, () => {
+    server.listen(PORT, '0.0.0.0', () => {
         console.log(`Server is successfully running on port ${PORT}`);
+
+        // Initialize Cron Jobs AFTER DB connects and server is listening
+        startShiftWarningCron(io);
+        startDailyReportsCron(io);
+        startKeepAliveCron();
+        startAutoAbsentCron(io);
+        startCheckoutReminderCron(io);
+        startWeeklyScoreCron(io);
     });
+}).catch(err => {
+    console.error("Failed to connect to the database", err);
 });
