@@ -1,4 +1,4 @@
-const getAdminMissingReportTemplate = (adminName, employeeName, schoolName, location, scheduledTime) => `
+const getAdminMissingReportTemplate = (adminName, employeeName, schoolName, band, location, scheduledTime) => `
     <!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="color-scheme" content="light dark"><style>
     body { font-family: 'Segoe UI', -apple-system, sans-serif; background-color: #f4f4f5; margin: 0; padding: 40px 20px; -webkit-font-smoothing: antialiased; }
     .container { max-width: 600px; margin: 0 auto; background-color: #ffffff; padding: 40px; border-radius: 12px; border: 1px solid #e4e4e7; }
@@ -22,10 +22,11 @@ const getAdminMissingReportTemplate = (adminName, employeeName, schoolName, loca
     @media (max-width: 600px) { .container { padding: 30px 20px; } }
     </style></head><body>
     <div class="container"><div class="badge">Compliance Alert</div>
-    <h2>Daily Report Overdue</h2><p>Hello ${adminName},</p><p>An employee has missed the 8:00 PM deadline to submit their End of Day report for today's scheduled shift.</p>
+    <h2>Daily Report Overdue</h2><p>Hello ${adminName},</p><p>An employee has missed the 8:00 PM deadline to submit their End of Day report for a specific scheduled shift.</p>
     <div class="card">
         <div class="card-item"><span class="label">Employee</span><div class="value">${employeeName}</div></div>
-        <div class="card-item"><span class="label">Assigned Location</span><div class="value">${schoolName}</div><div class="address">📍 ${location}</div></div>
+        <div class="card-item"><span class="label">School & Category</span><div class="value">${schoolName} — ${band}</div></div>
+        <div class="card-item"><span class="label">Location</span><div class="address">📍 ${location}</div></div>
         <div class="card-item"><span class="label">Scheduled Time</span><div class="value">${scheduledTime}</div></div>
     </div>
     <p>An automated reminder has been sent to the employee. Please review this compliance miss in the Admin Dashboard.</p>

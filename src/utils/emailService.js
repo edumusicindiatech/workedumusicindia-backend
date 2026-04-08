@@ -358,26 +358,34 @@ const sendAdminAutoAbsentAlert = async (adminEmail, adminName, employeeName, sch
     } catch (e) { console.error("AutoAbsent Email Error:", e); }
 };
 
-const sendEmployeeMissingReportAlert = async (email, employeeName, schoolName) => {
+const sendEmployeeMissingReportAlert = async (email, employeeName, schoolName, band) => {
     try {
         await transporter.sendMail({
             from: process.env.EMAIL_FROM,
             to: email,
-            subject: "Action Required: Missing Daily Report",
-            html: getEmployeeMissingReportTemplate(employeeName, schoolName)
+            // Updated subject to be more specific
+            subject: `Action Required: Missing Daily Report - ${schoolName} (${band})`,
+            // Pass the new band parameter to the template
+            html: getEmployeeMissingReportTemplate(employeeName, schoolName, band)
         });
-    } catch (e) { console.error("Employee Missing Report Email Error:", e); }
+    } catch (e) {
+        console.error("Employee Missing Report Email Error:", e);
+    }
 };
 
-const sendAdminMissingReportAlert = async (adminEmail, adminName, employeeName, schoolName, location, scheduledTime) => {
+const sendAdminMissingReportAlert = async (adminEmail, adminName, employeeName, schoolName, band, location, scheduledTime) => {
     try {
         await transporter.sendMail({
             from: process.env.EMAIL_FROM,
             to: adminEmail,
-            subject: `[Compliance Alert] Missing Report: ${employeeName}`,
-            html: getAdminMissingReportTemplate(adminName, employeeName, schoolName, location, scheduledTime)
+            // Updated subject to include the category for the admin
+            subject: `[Compliance Alert] Missing Report: ${employeeName} - ${band}`,
+            // Pass the new band parameter to the template
+            html: getAdminMissingReportTemplate(adminName, employeeName, schoolName, band, location, scheduledTime)
         });
-    } catch (e) { console.error("Admin Missing Report Email Error:", e); }
+    } catch (e) {
+        console.error("Admin Missing Report Email Error:", e);
+    }
 };
 
 const sendAdminNewEventAlert = async (adminEmail, adminName, employeeName, schoolName, category, startDate, endDate, timeFrom, timeTo, description) => {

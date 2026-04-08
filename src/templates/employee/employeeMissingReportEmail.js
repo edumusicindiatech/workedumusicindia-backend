@@ -1,4 +1,4 @@
-const getEmployeeMissingReportTemplate = (employeeName, schoolName) => `
+const getEmployeeMissingReportTemplate = (employeeName, schoolName, band) => `
     <!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="color-scheme" content="light dark"><style>
     body { font-family: 'Segoe UI', -apple-system, sans-serif; background-color: #f4f4f5; margin: 0; padding: 40px 20px; -webkit-font-smoothing: antialiased; }
     .container { max-width: 600px; margin: 0 auto; background-color: #ffffff; padding: 40px; border-radius: 12px; border: 1px solid #e4e4e7; }
@@ -26,14 +26,15 @@ const getEmployeeMissingReportTemplate = (employeeName, schoolName) => `
     </style></head><body>
     <div class="container"><div class="badge">Action Required</div>
     <h2>Daily Report Missing</h2><p>Hello ${employeeName},</p>
-    <p>Our records indicate that you have a scheduled working day at <strong>${schoolName}</strong> today, but you have not yet submitted your End of Day report.</p>
+    <p>Our records indicate that you had a scheduled session for <strong>${schoolName} (${band})</strong> today, but you have not yet submitted your End of Day report.</p>
     <div class="card">
-        <div class="card-item"><span class="label">Status</span><div class="value" style="color: #e11d48;">Pending Submission</div></div>
+        <div class="card-item"><span class="label">Assignment</span><div class="value">${schoolName}</div></div>
+        <div class="card-item"><span class="label">Category</span><div class="value">${band}</div></div>
         <div class="card-item"><span class="label">Deadline</span><div class="value">8:00 PM (Overdue)</div></div>
     </div>
-    <p>Please log in to your dashboard and submit your Daily Report immediately to maintain compliance with the scheduling guidelines.</p>
+    <p>Please log in to your dashboard and submit this specific report immediately to maintain compliance.</p>
     <div class="btn-container">
-        <a href="${process.env.FRONTEND_URL || 'http://localhost:5173'}/admin/reports" class="btn">Submit Report Now</a>
+        <a href="${process.env.FRONTEND_URL || 'http://localhost:5173'}/employee/report" class="btn">Submit Report Now</a>
     </div>
     <div class="footer">This is an automated reminder from WorkEduMusic.</div>
     </div></body></html>

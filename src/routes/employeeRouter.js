@@ -723,15 +723,35 @@ employeeRouter.get('/tasks', userAuth, async (req, res) => {
 // ==========================================
 employeeRouter.post('/daily-report', userAuth, async (req, res) => {
     try {
-        const { date, category, summary, eventName, eventDate } = req.body;
+        // 1. Extract the new fields (schoolId, band) sent from the frontend React app
+        const { schoolId, band, date, category, summary, eventName, eventDate } = req.body;
         const teacherId = req.user._id;
         const teacherName = req.user.name; // Get the employee's name for the alert
 
-        // Upsert: Update if exists, Create if it doesn't
+        // 2. Fetch the School Name to save it directly on the report 
+        // (This prevents the "General Location" fallback on the Admin UI)
+        const school = await School.findById(schoolId);
+        const schoolName = school ? school.schoolName : "Unknown School";
+
+        // 3. Upsert: Update if exists, Create if it doesn't
+        // Note: Added schoolId to the query filter so a teacher can submit different reports for different schools on the same day.
         const report = await DailyReports.findOneAndUpdate(
-            { teacher: teacherId, date: date },
             {
-                $set: { category, summary, eventName, eventDate }
+                teacher: teacherId,
+                date: date,
+                schoolId: schoolId,
+                band: band
+            },
+            {
+                $set: {
+                    schoolId,
+                    schoolName,  // Added schoolName
+                    band,        // Added band (Junior/Senior)
+                    category,
+                    summary,
+                    eventName,
+                    eventDate
+                }
             },
             { returnDocument: 'after', upsert: true }
         );
@@ -745,7 +765,7 @@ employeeRouter.post('/daily-report', userAuth, async (req, res) => {
                 const adminNotif = await Notification.create({
                     recipient: admin._id,
                     title: "Daily Report Submitted",
-                    message: `${teacherName} has submitted their End of Day report.`,
+                    message: `${teacherName} has submitted their End of Day report for ${schoolName}.`, // Added schoolName to notification
                     type: "System"
                 });
 

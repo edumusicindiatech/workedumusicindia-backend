@@ -222,7 +222,7 @@ adminRouter.post('/employees/:id/assign-school', userAuth, adminAuth, async (req
     try {
         const { id } = req.params;
         const {
-            schoolName, schoolAddress, category, startDate, endDate, 
+            schoolName, schoolAddress, category, startDate, endDate,
             startTime, endTime, allowedDays, latitude, longitude
         } = req.body;
 
@@ -299,7 +299,7 @@ adminRouter.post('/employees/:id/assign-school', userAuth, adminAuth, async (req
         const newAssignment = {
             school: school._id,
             category,
-            startDate: istStartDate, 
+            startDate: istStartDate,
             endDate: istEndDate,
             startTime,
             endTime,
@@ -1419,10 +1419,21 @@ adminRouter.put('/settings/global', userAuth, adminAuth, async (req, res) => {
 adminRouter.get('/daily-reports/:id', userAuth, adminAuth, async (req, res) => {
     try {
         const { id } = req.params;
-        // Fetch reports for the specific employee, sorted by newest first
-        const reports = await DailyReports.find({ teacher: id }).sort({ date: -1 });
 
-        res.status(200).json({ success: true, data: reports });
+        const reports = await DailyReports.find({ teacher: id })
+            .populate('schoolId', 'schoolName')
+            .sort({ date: -1 })
+            .lean();
+
+        const formattedReports = reports.map(report => ({
+            ...report,
+            schoolName: report.schoolName || (report.schoolId && report.schoolId.schoolName) || 'Unknown School',
+
+            // Guarantee band exists for the UI
+            band: report.band || 'Unassigned'
+        }));
+
+        res.status(200).json({ success: true, data: formattedReports });
     } catch (error) {
         console.error("Fetch Daily Reports Error:", error);
         res.status(500).json({ success: false, message: "Server error fetching daily reports." });
