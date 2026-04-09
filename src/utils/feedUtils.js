@@ -32,7 +32,6 @@ const fetchDailyFeedData = async (status) => {
     // ==========================================
     const actualAttendance = await Attendance.find({ date: dateString })
         .populate('teacher', 'name employeeId zone mobile profilePicture')
-        // THE FIX: Added location and coordinate fields so distance tracking works
         .populate('school', 'schoolName address location coordinates latitude longitude');
 
     const assignedUsers = await User.find({
@@ -40,13 +39,28 @@ const fetchDailyFeedData = async (status) => {
         isActive: true,
         'assignments.allowedDays': currentDayName
     })
-        // THE FIX: Added location and coordinate fields for pending/unstarted shifts
         .populate('assignments.school', 'schoolName address location coordinates latitude longitude');
 
     // ==========================================
     // 3. THE MERGING ENGINE (With Start & End Date Fixes)
     // ==========================================
-    let combinedFeed = [...actualAttendance];
+    
+    // NEW FIX: Map over actualAttendance to attach expected schedules from the assignedUsers
+    const actualAttendanceWithSchedules = actualAttendance.map(record => {
+        const doc = record.toObject ? record.toObject() : record;
+        
+        const user = assignedUsers.find(u => u._id.toString() === doc.teacher?._id?.toString());
+        if (user && user.assignments) {
+            const assignment = user.assignments.find(a => a.school?._id?.toString() === doc.school?._id?.toString());
+            if (assignment) {
+                doc.expectedStartTime = assignment.startTime;
+                doc.expectedEndTime = assignment.endTime;
+            }
+        }
+        return doc;
+    });
+
+    let combinedFeed = [...actualAttendanceWithSchedules];
 
     assignedUsers.forEach(user => {
         if (!user.assignments) return;
@@ -57,8 +71,6 @@ const fetchDailyFeedData = async (status) => {
             if (!assign.school || !assign.school._id) return;
 
             // --- DATE ISOLATION LOGIC ---
-
-            // 1. Check Start Date
             const assignmentStartDate = assign.startDate ? new Date(assign.startDate) : assign._id.getTimestamp();
             const normalizedStartDate = new Date(assignmentStartDate);
             normalizedStartDate.setHours(0, 0, 0, 0);
@@ -68,18 +80,13 @@ const fetchDailyFeedData = async (status) => {
 
             const isAfterStartDate = normalizedToday >= normalizedStartDate;
 
-            // 2. Check End Date (If it exists)
-            let isBeforeEndDate = true; // Assume true if there is no end date
+            let isBeforeEndDate = true;
             if (assign.endDate) {
                 const normalizedEndDate = new Date(assign.endDate);
-                normalizedEndDate.setHours(23, 59, 59, 999); // Set to the very last millisecond of the end date
+                normalizedEndDate.setHours(23, 59, 59, 999);
                 isBeforeEndDate = normalizedToday <= normalizedEndDate;
             }
 
-            // 3. Only show pending IF:
-            // - The start date has arrived (No future bleed)
-            // - The end date has NOT passed (No expired assignments)
-            // - It's the correct day of the week
             if (isAfterStartDate && isBeforeEndDate && assign.allowedDays.includes(currentDayName)) {
 
                 const hasStarted = actualAttendance.find(a =>
