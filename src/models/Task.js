@@ -22,8 +22,12 @@ const TaskSchema = new mongoose.Schema({
         default: 'Junior Band'
     },
     daysAllotted: [{ type: String }],
-    duration: { type: String }, // e.g., "2 Days"
-    timing: { type: String },   // e.g., "09:00 AM - 03:00 PM"
+
+    startDate: { type: Date },
+    endDate: { type: Date },
+    startTime: { type: String }, // e.g., "09:00"
+    endTime: { type: String },
+
     status: {
         type: String,
         enum: ['Pending', 'Accepted', 'Rejected'],

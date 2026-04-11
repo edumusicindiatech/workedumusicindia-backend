@@ -350,133 +350,155 @@ adminRouter.post('/employees/:id/assign-school', userAuth, adminAuth, async (req
 adminRouter.put('/employees/:empId/assignments/:assignmentId', userAuth, adminAuth, async (req, res) => {
     try {
         const { empId, assignmentId } = req.params;
-        const { schoolName, schoolAddress, category, startDate, endDate, startTime, endTime, allowedDays, latitude, longitude } = req.body;
+        const {
+            schoolName,
+            schoolAddress,
+            category,
+            startDate,
+            endDate,
+            startTime,
+            endTime,
+            allowedDays,
+            latitude,
+            longitude
+        } = req.body;
 
-        // 1. STRICT INPUT VALIDATIONS
+        // 1. INPUT VALIDATION
         if (!startDate || !startTime || !endTime) {
             return res.status(400).json({ success: false, message: "Start Date, Start Time, and End Time are required." });
         }
         if (!Array.isArray(allowedDays) || allowedDays.length === 0) {
             return res.status(400).json({ success: false, message: "Please select at least one working day." });
         }
-        if (schoolName !== undefined && (!schoolName || String(schoolName).trim() === '')) {
-            return res.status(400).json({ success: false, message: "School Name must be filled." });
-        }
-        if (schoolAddress !== undefined && (!schoolAddress || String(schoolAddress).trim() === '')) {
-            return res.status(400).json({ success: false, message: "School Location must be filled." });
-        }
-        if (latitude !== undefined || longitude !== undefined) {
-            if (latitude === '' || longitude === '' || latitude === null || longitude === null) {
-                return res.status(400).json({ success: false, message: "Geofence coordinates are required." });
-            }
-            const lat = parseFloat(latitude);
-            const lng = parseFloat(longitude);
-            if (isNaN(lat) || isNaN(lng)) {
-                return res.status(400).json({ success: false, message: "Invalid geofence coordinates provided." });
-            }
-            if (lat < 6.0 || lat > 38.0 || lng < 68.0 || lng > 98.0) {
-                return res.status(400).json({ success: false, message: "Coordinates must be located within India." });
-            }
-            req.body.geofence = { latitude: lat, longitude: lng };
-            delete req.body.latitude;
-            delete req.body.longitude;
-        }
 
-        // 2. FETCH EMPLOYEE & ASSIGNMENT
+        // 2. FETCH EMPLOYEE & POPULATE SCHOOL
         const employee = await User.findById(empId).populate('assignments.school');
         if (!employee) return res.status(404).json({ success: false, message: "Employee not found" });
 
         const assignment = employee.assignments.id(assignmentId);
         if (!assignment) return res.status(404).json({ success: false, message: "Assignment not found" });
 
-        // 3. IST DATE NORMALIZATION & LEAVE RESTRICTION CHECK
-        let istStartDate;
-        if (startDate) istStartDate = new Date(`${startDate}T00:00:00.000+05:30`);
-
-        let istEndDate;
-        if (endDate !== undefined) istEndDate = endDate ? new Date(`${endDate}T23:59:59.999+05:30`) : null;
-
-        const effStartDate = istStartDate || assignment.startDate;
-        const effEndDate = istEndDate !== undefined ? istEndDate : (assignment.endDate || new Date("2099-12-31T23:59:59.999+05:30"));
-        const queryEndDate = effEndDate || new Date("2099-12-31T23:59:59.999+05:30");
+        // 3. DATE NORMALIZATION (IST) & LEAVE CONFLICT CHECK
+        // Create dates forced to IST (UTC+5:30)
+        const istStartDate = new Date(`${startDate}T00:00:00.000+05:30`);
+        const istEndDate = endDate ? new Date(`${endDate}T23:59:59.999+05:30`) : new Date("2099-12-31T23:59:59.999+05:30");
 
         const overlappingLeave = await LeaveRequest.findOne({
             employee: employee._id,
             status: 'approved',
-            fromDate: { $lte: queryEndDate },
-            toDate: { $gte: effStartDate }
+            fromDate: { $lte: istEndDate },
+            toDate: { $gte: istStartDate }
         });
 
         if (overlappingLeave) {
             return res.status(400).json({
                 success: false,
-                message: `Cannot update schedule. ${employee.name} is on an approved leave from ${new Date(overlappingLeave.fromDate).toDateString()} to ${new Date(overlappingLeave.toDate).toDateString()} which conflicts with these dates.`
+                message: `${employee.name} is on approved leave from ${new Date(overlappingLeave.fromDate).toDateString()} to ${new Date(overlappingLeave.toDate).toDateString()}.`
             });
         }
 
-        // 4. TRACK CHANGES & SAVE
+        // 4. COORDINATE & SCHOOL UPDATES
         const changes = [];
-        const fieldLabels = {
-            category: "Category", startDate: "Start Date", endDate: "End Date",
-            startTime: "Start Time", endTime: "End Time", allowedDays: "Working Days"
-        };
+        const schoolUpdates = {};
 
-        Object.keys(req.body).forEach(key => {
-            if (!fieldLabels[key]) return;
-            let oldVal = assignment[key];
-            let newVal = req.body[key];
+        // Process Geolocation for GeoJSON [lng, lat]
+        if (latitude && longitude) {
+            const lat = parseFloat(latitude);
+            const lng = parseFloat(longitude);
 
-            if (key.includes('Date') && oldVal) {
-                oldVal = new Date(oldVal).toISOString().split('T')[0];
+            if (isNaN(lat) || isNaN(lng)) {
+                return res.status(400).json({ success: false, message: "Invalid coordinates." });
             }
 
-            if (Array.isArray(oldVal)) {
-                if (oldVal.sort().join(',') !== newVal.sort().join(',')) {
-                    changes.push({ field: fieldLabels[key], oldValue: oldVal.length > 0 ? oldVal.join(', ') : "None", newValue: newVal.join(', ') });
+            // Verify if coordinates are within India boundaries
+            if (lat < 6.0 || lat > 38.0 || lng < 68.0 || lng > 98.0) {
+                return res.status(400).json({ success: false, message: "Coordinates must be within India." });
+            }
+
+            schoolUpdates.location = {
+                type: 'Point',
+                coordinates: [lng, lat] // MongoDB requires [Longitude, Latitude]
+            };
+            changes.push({ field: "Geolocation", oldValue: "Updated", newValue: "New Location" });
+        }
+
+        if (schoolName) {
+            schoolUpdates.schoolName = schoolName;
+            if (assignment.school.schoolName !== schoolName) {
+                changes.push({ field: "School Name", oldValue: assignment.school.schoolName, newValue: schoolName });
+            }
+        }
+
+        if (schoolAddress) {
+            schoolUpdates.address = schoolAddress;
+            if (assignment.school.address !== schoolAddress) {
+                changes.push({ field: "Address", oldValue: assignment.school.address, newValue: schoolAddress });
+            }
+        }
+
+        // Update the Referenced School Document
+        if (Object.keys(schoolUpdates).length > 0 && assignment.school._id) {
+            await mongoose.model('School').findByIdAndUpdate(assignment.school._id, schoolUpdates);
+        }
+
+        // 5. UPDATE ASSIGNMENT SUB-DOCUMENT
+        const fieldLabels = {
+            category: "Category",
+            startTime: "Start Time",
+            endTime: "End Time",
+            allowedDays: "Working Days"
+        };
+
+        // Compare and track assignment-specific changes
+        Object.keys(fieldLabels).forEach(key => {
+            if (req.body[key] !== undefined) {
+                let oldVal = assignment[key];
+                let newVal = req.body[key];
+
+                if (Array.isArray(oldVal)) {
+                    if (oldVal.sort().join(',') !== newVal.sort().join(',')) {
+                        changes.push({ field: fieldLabels[key], oldValue: oldVal.join(', '), newValue: newVal.join(', ') });
+                    }
+                } else if (oldVal !== newVal) {
+                    changes.push({ field: fieldLabels[key], oldValue: oldVal, newValue: newVal });
                 }
-            } else if (oldVal !== newVal) {
-                changes.push({ field: fieldLabels[key], oldValue: oldVal || 'Not Set', newValue: newVal || 'Removed' });
+                assignment[key] = newVal;
             }
         });
 
-        if (changes.length === 0 && !req.body.geofence && !req.body.schoolName) {
-            return res.status(200).json({ success: true, message: "No actual changes were made." });
-        }
-
-        Object.assign(assignment, req.body);
-
-        // OVERRIDE WITH SAFE IST DATES
-        if (istStartDate) assignment.startDate = istStartDate;
-        if (istEndDate !== undefined) assignment.endDate = istEndDate;
+        // Set the normalized dates
+        assignment.startDate = istStartDate;
+        assignment.endDate = endDate ? istEndDate : null;
 
         await employee.save();
 
-        // 5. NOTIFICATIONS & EMAILS
-        const changeSummary = changes.map(c => c.field).join(', ') || 'Location Details';
-        const empMsg = `Your schedule for ${assignment.school.schoolName} was updated (${changeSummary}).`;
+        // 6. NOTIFICATIONS
+        const summary = changes.map(c => c.field).join(', ');
+        const notificationMsg = `Schedule for ${schoolName || assignment.school.schoolName} updated: ${summary}`;
 
-        const empNotification = await Notification.create({ recipient: employee._id, title: "Schedule Updated", message: empMsg, type: "Assignment" });
-        if (req.io) req.io.to(employee._id.toString()).emit('new_notification', { _id: empNotification._id, title: "Schedule Updated", message: empMsg, timestamp: new Date() });
+        const notif = await Notification.create({
+            recipient: employee._id,
+            title: "Assignment Updated",
+            message: notificationMsg,
+            type: "Assignment"
+        });
 
-        if (await canSendEmailToUser(employee) && changes.length > 0) {
-            sendEmployeeAssignmentUpdatedEmail(employee.email, employee.name, assignment.school.schoolName, assignment.school.address, changes, assignment).catch(err => console.error(err));
+        if (req.io) {
+            req.io.to(employee._id.toString()).emit('new_notification', {
+                ...notif._doc,
+                timestamp: new Date()
+            });
         }
 
-        const admins = await User.find({ role: { $in: ['Admin'] }, _id: { $ne: req.user._id } });
-        const adminMsg = `${employee.name}'s schedule for ${assignment.school.schoolName} was updated by ${req.user.name}.`;
+        res.status(200).json({
+            success: true,
+            message: "Assignment and school data updated successfully.",
+            changes: changes
+        });
 
-        await Promise.all(admins.map(async (admin) => {
-            const adminNotif = await Notification.create({ recipient: admin._id, title: "System Alert: Schedule Updated", message: adminMsg, type: "System" });
-            if (req.io) req.io.to(admin._id.toString()).emit('new_notification', { _id: adminNotif._id, title: adminNotif.title, message: adminNotif.message, timestamp: new Date() });
-            if (await canSendEmailToUser(admin) && changes.length > 0) {
-                sendAdminAssignmentUpdatedEmail(admin.email, admin.name, employee.name, assignment.school.schoolName, assignment.school.address, assignment.category).catch(err => console.error(err));
-            }
-        }));
-
-        res.status(200).json({ success: true, message: "Assignment updated and teacher notified of specific changes." });
     } catch (error) {
-        console.error("Update Assignment Error:", error);
-        res.status(500).json({ success: false, message: "Server error updating assignment." });
+        console.error("Critical Route Error:", error);
+        res.status(500).json({ success: false, message: "Server error during update." });
     }
 });
 
@@ -708,31 +730,36 @@ adminRouter.delete('/employees/:id', userAuth, adminAuth, async (req, res) => {
 adminRouter.post('/employees/:id/assign-task', userAuth, adminAuth, async (req, res) => {
     try {
         const { id } = req.params;
-        const { schoolName, schoolAddress, latitude, longitude, taskDescription, category, daysAllotted, duration, timing } = req.body;
+        // Updated to receive the separated fields
+        const { 
+            schoolName, schoolAddress, latitude, longitude, 
+            taskDescription, category, daysAllotted, 
+            startDate, endDate, startTime, endTime 
+        } = req.body;
 
         const employee = await User.findById(id);
         if (!employee) return res.status(404).json({ success: false, message: "Employee not found." });
 
-        // --- 🚨 FIXED: LEAVE RESTRICTION CHECK (IST BOUNDARIES) ---
-        const todayStr = getISTDateString();
-        const todayStart = new Date(`${todayStr}T00:00:00.000+05:30`);
-        const todayEnd = new Date(`${todayStr}T23:59:59.999+05:30`);
+        // 1. DATE NORMALIZATION (IST BOUNDARIES)
+        const istStartDate = new Date(`${startDate}T00:00:00.000+05:30`);
+        const istEndDate = endDate ? new Date(`${endDate}T23:59:59.999+05:30`) : new Date("2099-12-31T23:59:59.999+05:30");
 
+        // 2. LEAVE RESTRICTION CHECK (Checks actual task dates, not just 'today')
         const activeLeave = await LeaveRequest.findOne({
             employee: employee._id,
             status: 'approved',
-            fromDate: { $lte: todayEnd },
-            toDate: { $gte: todayStart }
+            fromDate: { $lte: istEndDate },
+            toDate: { $gte: istStartDate }
         });
 
         if (activeLeave) {
             return res.status(400).json({
                 success: false,
-                message: `Cannot assign task. ${employee.name} is currently on an approved leave until ${new Date(activeLeave.toDate).toDateString()}.`
+                message: `Cannot assign task. ${employee.name} is on approved leave from ${new Date(activeLeave.fromDate).toDateString()} to ${new Date(activeLeave.toDate).toDateString()} which conflicts with this schedule.`
             });
         }
-        // ------------------------------------
 
+        // 3. GEOJSON LOCATION SETUP
         let lat = null;
         let lng = null;
         if (latitude && longitude) {
@@ -750,7 +777,7 @@ adminRouter.post('/employees/:id/assign-task', userAuth, adminAuth, async (req, 
             school = new School({
                 schoolName,
                 address: schoolAddress || "No address provided",
-                location: { type: 'Point', coordinates: [lng, lat] }
+                location: { type: 'Point', coordinates: [lng, lat] } // GeoJSON
             });
             await school.save();
         } else {
@@ -761,14 +788,35 @@ adminRouter.post('/employees/:id/assign-task', userAuth, adminAuth, async (req, 
             }
         }
 
+        // 4. CREATE TASK (Using new individual fields)
         const newTask = await Task.create({
-            teacher: id, school: school._id, taskDescription, category: category || "Junior Band", daysAllotted, duration, timing, status: 'Pending'
+            teacher: id, 
+            school: school._id, 
+            taskDescription, 
+            category: category || "Junior Band", 
+            daysAllotted, 
+            startDate: istStartDate,
+            endDate: endDate ? istEndDate : null,
+            startTime,
+            endTime,
+            status: 'Pending'
         });
 
         const populatedTask = await Task.findById(newTask._id).populate('school');
 
+        // 5. NOTIFICATIONS AND EMAILS
         const taskTitle = `Assignment at ${school.schoolName}`;
-        const scheduleString = `${daysAllotted.join(', ')} (${timing})`;
+        
+        // Convert 24hr to 12hr for email display if needed, or simply pass the string
+        const format12H = (time) => {
+            if(!time) return "";
+            const [h, m] = time.split(':');
+            let hr = parseInt(h);
+            const ampm = hr >= 12 ? 'PM' : 'AM';
+            hr = hr % 12 || 12;
+            return `${hr < 10 ? '0'+hr : hr}:${m} ${ampm}`;
+        };
+        const scheduleString = `${daysAllotted.join(', ')} (${format12H(startTime)} - ${format12H(endTime)})`;
 
         if (await canSendEmailToUser(employee)) {
             sendEmployeeTaskAssignedEmail(employee.email, employee.name, taskTitle, taskDescription, scheduleString, category);
@@ -805,22 +853,32 @@ adminRouter.post('/employees/:id/assign-task', userAuth, adminAuth, async (req, 
 adminRouter.put('/tasks/:taskId', userAuth, adminAuth, async (req, res) => {
     try {
         const { taskId } = req.params;
-        const task = await Task.findById(taskId).populate('school').populate('teacher');
+        const { 
+            schoolName, schoolAddress, latitude, longitude,
+            taskDescription, category, startDate, endDate, startTime, endTime, daysAllotted, status 
+        } = req.body;
 
+        const task = await Task.findById(taskId).populate('school').populate('teacher');
         if (!task) return res.status(404).json({ success: false, message: "Task not found." });
 
         const employee = task.teacher;
 
-        // --- 🚨 FIXED: LEAVE RESTRICTION CHECK (IST BOUNDARIES) ---
-        const todayStr = getISTDateString();
-        const todayStart = new Date(`${todayStr}T00:00:00.000+05:30`);
-        const todayEnd = new Date(`${todayStr}T23:59:59.999+05:30`);
+        // 1. DATE NORMALIZATION & LEAVE RESTRICTION CHECK (IST BOUNDARIES)
+        let istStartDate, istEndDate;
+        if (startDate) {
+            istStartDate = new Date(`${startDate}T00:00:00.000+05:30`);
+            istEndDate = endDate ? new Date(`${endDate}T23:59:59.999+05:30`) : new Date("2099-12-31T23:59:59.999+05:30");
+        } else {
+            const todayStr = getISTDateString(); // Assuming this is your helper
+            istStartDate = new Date(`${todayStr}T00:00:00.000+05:30`);
+            istEndDate = new Date(`${todayStr}T23:59:59.999+05:30`);
+        }
 
         const activeLeave = await LeaveRequest.findOne({
             employee: employee._id,
             status: 'approved',
-            fromDate: { $lte: todayEnd },
-            toDate: { $gte: todayStart }
+            fromDate: { $lte: istEndDate },
+            toDate: { $gte: istStartDate }
         });
 
         // Block if on leave, BUT allow the update if it's just the employee accepting/rejecting it via a proxy route
@@ -830,52 +888,89 @@ adminRouter.put('/tasks/:taskId', userAuth, adminAuth, async (req, res) => {
                 message: `Cannot update task details. ${employee.name} is currently on an approved leave until ${new Date(activeLeave.toDate).toDateString()}.`
             });
         }
-        // ------------------------------------
-
-        const schoolName = task.school.schoolName;
-        const taskTitle = `Assignment at ${schoolName}`;
 
         const changes = [];
-        const fieldLabels = { taskDescription: "Description", duration: "Duration", timing: "Timing", status: "Updation", daysAllotted: "Days Allotted" };
+        const schoolUpdates = {};
 
-        Object.keys(req.body).forEach(key => {
-            if (!fieldLabels[key]) return;
-            let oldVal = task[key];
-            let newVal = req.body[key];
+        // 2. PROCESS GEOLOCATION & SCHOOL UPDATES
+        if (latitude && longitude) {
+            const lat = parseFloat(latitude);
+            const lng = parseFloat(longitude);
+            if (!isNaN(lat) && !isNaN(lng) && lat >= 6 && lat <= 38 && lng >= 68 && lng <= 98) {
+                schoolUpdates.location = { type: 'Point', coordinates: [lng, lat] }; // GeoJSON Standard
+                changes.push({ field: "Geolocation", oldValue: "Updated", newValue: "New Location" });
+            }
+        }
+        if (schoolName && task.school.schoolName !== schoolName) {
+            schoolUpdates.schoolName = schoolName;
+            changes.push({ field: "School Name", oldValue: task.school.schoolName, newValue: schoolName });
+        }
+        if (schoolAddress && task.school.address !== schoolAddress) {
+            schoolUpdates.address = schoolAddress;
+            changes.push({ field: "Address", oldValue: task.school.address, newValue: schoolAddress });
+        }
 
-            if (Array.isArray(oldVal)) {
-                if (oldVal.sort().join(',') !== newVal.sort().join(',')) {
-                    changes.push({ field: fieldLabels[key], oldValue: oldVal.length > 0 ? oldVal.join(', ') : "None", newValue: newVal.join(', ') });
+        // Apply School Document Updates
+        if (Object.keys(schoolUpdates).length > 0 && task.school._id) {
+            await mongoose.model('School').findByIdAndUpdate(task.school._id, schoolUpdates);
+        }
+
+        // 3. PROCESS TASK UPDATES
+        const fieldLabels = { 
+            taskDescription: "Description", category: "Category", 
+            startTime: "Start Time", endTime: "End Time", status: "Status" 
+        };
+
+        Object.keys(fieldLabels).forEach(key => {
+            if (req.body[key] !== undefined) {
+                let oldVal = task[key];
+                let newVal = req.body[key];
+                if (oldVal !== newVal) {
+                    changes.push({ field: fieldLabels[key], oldValue: oldVal || 'Not Set', newValue: newVal || 'Removed' });
+                    task[key] = newVal; // Directly apply to task
                 }
-            } else if (oldVal !== newVal) {
-                changes.push({ field: fieldLabels[key], oldValue: oldVal || 'Not Set', newValue: newVal || 'Removed' });
             }
         });
 
-        if (changes.length === 0) {
-            return res.status(200).json({ success: true, message: "No changes made." });
-        }
+        if (startDate) task.startDate = istStartDate;
+        if (endDate !== undefined) task.endDate = endDate ? new Date(`${endDate}T23:59:59.999+05:30`) : null;
 
-        Object.assign(task, req.body);
+        if (daysAllotted && Array.isArray(daysAllotted)) {
+            if (task.daysAllotted.sort().join(',') !== daysAllotted.sort().join(',')) {
+                changes.push({ field: "Days Allotted", oldValue: task.daysAllotted.length > 0 ? task.daysAllotted.join(', ') : "None", newValue: daysAllotted.join(', ') });
+                task.daysAllotted = daysAllotted;
+            }
+        }
 
         if (req.body.status && req.body.status !== 'Rejected') {
             task.rejectReason = null;
         }
 
+        if (changes.length === 0) {
+            return res.status(200).json({ success: true, message: "No changes made." });
+        }
+
         await task.save();
 
+        // 4. NOTIFICATIONS & EMAILS
         const changeSummary = changes.map(c => c.field).join(', ');
+        const displaySchoolName = schoolName || task.school.schoolName;
+        const taskTitle = `Assignment at ${displaySchoolName}`;
 
         if (await canSendEmailToUser(employee)) {
-            const formattedTask = { description: task.taskDescription, dueDate: `${task.daysAllotted.join(', ')} (${task.timing})`, status: task.status, rejectionReason: task.rejectReason };
+            const formattedTask = { 
+                description: task.taskDescription, 
+                dueDate: `${task.daysAllotted.join(', ')} (${task.startTime} - ${task.endTime})`, 
+                status: task.status, 
+                rejectionReason: task.rejectReason 
+            };
             sendEmployeeTaskUpdatedEmail(employee.email, employee.name, taskTitle, changes, formattedTask);
         }
 
-        const empNotif = await Notification.create({ recipient: employee._id, title: "Task Updated", message: `Your task at ${schoolName} was updated (${changeSummary}).`, type: "Updation" });
+        const empNotif = await Notification.create({ recipient: employee._id, title: "Task Updated", message: `Your task at ${displaySchoolName} was updated (${changeSummary}).`, type: "Updation" });
         if (req.io) req.io.to(employee._id.toString()).emit('new_notification', empNotif);
 
         const admins = await User.find({ role: { $in: ['Admin'] }, _id: { $ne: req.user._id } });
-
         const detailsHtml = changes.map(c => `
              <div class="card-item" style="padding-top: 8px; border-top: 1px solid #e4e4e7;">
                 <span class="label">${c.field} Changed</span>

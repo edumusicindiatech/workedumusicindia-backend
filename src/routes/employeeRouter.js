@@ -1687,4 +1687,34 @@ employeeRouter.delete("/profile-picture", userAuth, async (req, res) => {
     }
 });
 
+// ============================================================================
+// 34. DELETE ASSIGNED TASKS
+// ============================================================================
+employeeRouter.delete('/tasks/:taskId', userAuth, async (req, res) => {
+    try {
+        const { taskId } = req.params;
+        const employeeId = req.user._id; // Extracted from userAuth middleware
+
+        // Make sure the task exists and belongs to the employee
+        const task = await Task.findOne({ _id: taskId, teacher: employeeId });
+
+        if (!task) {
+            return res.status(404).json({ success: false, message: "Task not found." });
+        }
+
+        // Only allow deleting tasks that have been resolved (Accepted or Rejected)
+        if (task.status === 'Pending') {
+            return res.status(400).json({ success: false, message: "You cannot delete a pending task." });
+        }
+
+        await Task.findByIdAndDelete(taskId);
+
+        res.status(200).json({ success: true, message: "Task removed from your feed." });
+
+    } catch (error) {
+        console.error("Error deleting task:", error);
+        res.status(500).json({ success: false, message: "Server error deleting task." });
+    }
+});
+
 module.exports = employeeRouter;
