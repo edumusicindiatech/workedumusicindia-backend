@@ -4,6 +4,7 @@ const attendanceSchema = new mongoose.Schema({
     teacher: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     school: { type: mongoose.Schema.Types.ObjectId, ref: 'School', required: true },
     band: { type: String, enum: ['Junior Band', 'Senior Band'], required: true },
+    isTask: { type: Boolean, default: false },
 
     date: { type: String, required: true }, // Format: "YYYY-MM-DD" for easy grouping
     status: {

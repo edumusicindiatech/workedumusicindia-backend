@@ -195,7 +195,7 @@ adminRouter.get('/employees/:id', userAuth, adminAuth, async (req, res) => {
         const employee = await User.findById(id).populate('assignments.school');
         if (!employee) return res.status(404).json({ success: false, message: "Employee not found." });
 
-        const tasks = await Task.find({ teacher: id }).populate('school', 'schoolName address');
+        const tasks = await Task.find({ teacher: id }).populate('school', 'schoolName address location');
 
         const warnings = await Warning.find({ teacher: id })
             .populate('issuedBy', 'name')

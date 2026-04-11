@@ -108,7 +108,6 @@ progressRouter.get('/:teacherId/export/:month', userAuth, adminAuth, async (req,
             date: { $regex: `^${month}` }
         }).populate('school', 'schoolName').sort({ date: 1 });
 
-        // 🚨 CRITICAL FIX: Replaced 'Z' with '+05:30' for accurate IST boundaries
         const monthStart = new Date(`${month}-01T00:00:00.000+05:30`);
         const nextMonth = new Date(monthStart);
         nextMonth.setMonth(nextMonth.getMonth() + 1);
@@ -127,7 +126,7 @@ progressRouter.get('/:teacherId/export/:month', userAuth, adminAuth, async (req,
 
         worksheet.columns = [
             { header: 'Date', key: 'date', width: 22 },
-            { header: 'School', key: 'school', width: 30 },
+            { header: 'School', key: 'school', width: 35 }, // Slightly widened for the task tag
             { header: 'Category (Band)', key: 'band', width: 22 },
             { header: 'Status', key: 'status', width: 15 },
             { header: 'Check In', key: 'checkIn', width: 15 },
@@ -143,7 +142,10 @@ progressRouter.get('/:teacherId/export/:month', userAuth, adminAuth, async (req,
         const categorizedStats = {};
 
         records.forEach(record => {
-            const schoolName = record.school?.schoolName || 'Unassigned';
+            const baseSchoolName = record.school?.schoolName || 'Unassigned';
+
+            // --- NEW: Add "(Task)" to the school name if the record is a task ---
+            const schoolName = record.isTask ? `${baseSchoolName} (Task)` : baseSchoolName;
             const bandName = record.band || 'General';
 
             if (!categorizedStats[schoolName]) categorizedStats[schoolName] = {};
@@ -161,7 +163,7 @@ progressRouter.get('/:teacherId/export/:month', userAuth, adminAuth, async (req,
 
             worksheet.addRow({
                 date: new Date(record.date).toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', month: 'short', day: 'numeric', year: 'numeric' }),
-                school: schoolName,
+                school: schoolName, // Utilizing the updated school name
                 band: bandName,
                 status: record.status,
                 checkIn: record.checkInTime ? new Date(record.checkInTime).toLocaleTimeString('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' }) : '--',
@@ -275,7 +277,6 @@ progressRouter.get('/:teacherId/graph', userAuth, adminAuth, async (req, res) =>
         let formattedData = [];
 
         if (period === 'weekly') {
-            // 🚨 CRITICAL FIX: Replaced 'Z' with '+05:30' for accurate IST boundaries
             const monthStart = new Date(`${dateTarget}-01T00:00:00.000+05:30`);
             const nextMonth = new Date(monthStart);
             nextMonth.setMonth(nextMonth.getMonth() + 1);
@@ -300,7 +301,6 @@ progressRouter.get('/:teacherId/graph', userAuth, adminAuth, async (req, res) =>
             });
 
         } else if (period === 'monthly') {
-            // 🚨 CRITICAL FIX: Replaced 'Z' with '+05:30' for accurate IST boundaries
             const yearStart = new Date(`${dateTarget}-01-01T00:00:00.000+05:30`);
             const nextYear = new Date(yearStart);
             nextYear.setFullYear(nextYear.getFullYear() + 1);
@@ -312,7 +312,6 @@ progressRouter.get('/:teacherId/graph', userAuth, adminAuth, async (req, res) =>
 
             const monthlyStats = {};
             yearlyData.forEach(record => {
-                // Timezone safe extraction
                 const monthName = new Date(record.weekStartDate).toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', month: 'short' });
 
                 if (!monthlyStats[monthName]) {
