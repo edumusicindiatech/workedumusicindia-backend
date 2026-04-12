@@ -746,7 +746,7 @@ employeeRouter.get('/tasks', userAuth, async (req, res) => {
 employeeRouter.post('/daily-report', userAuth, async (req, res) => {
     try {
         // 1. Extract the new fields (schoolId, band) sent from the frontend React app
-        const { schoolId, band, date, category, summary, eventName, eventDate } = req.body;
+        const { schoolId, band, date, category, summary, eventName, eventDate, studentsPresent } = req.body;
         const teacherId = req.user._id;
         const teacherName = req.user.name; // Get the employee's name for the alert
 
@@ -770,6 +770,7 @@ employeeRouter.post('/daily-report', userAuth, async (req, res) => {
                     schoolName,  // Added schoolName
                     band,        // Added band (Junior/Senior)
                     category,
+                    studentsPresent,
                     summary,
                     eventName,
                     eventDate

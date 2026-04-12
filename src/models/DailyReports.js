@@ -9,10 +9,8 @@ const dailyReportSchema = new mongoose.Schema({
     date: { type: String, required: true }, // Format: "YYYY-MM-DD"
     category: { type: String, enum: ['Regular Report', 'Event Report'], required: true },
     schoolName: { type: String, required: true },
-
-    // Updated to strictly enforce the band names from your frontend
     band: { type: String, enum: ['Junior Band', 'Senior Band'], required: true },
-
+    studentsPresent: { type: Number, required: true },
     summary: { type: String, required: true },
 
     // Optional Event Fields
