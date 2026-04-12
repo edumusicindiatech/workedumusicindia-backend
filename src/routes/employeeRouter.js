@@ -711,8 +711,11 @@ employeeRouter.post('/media', userAuth, async (req, res) => {
 // ==========================================
 employeeRouter.get('/tasks', userAuth, async (req, res) => {
     try {
-        // Fetch tasks assigned to this employee
-        const tasks = await Task.find({ teacher: req.user._id })
+        // --- THE FIX: Filter out tasks that the employee has hidden ---
+        const tasks = await Task.find({
+            teacher: req.user._id,
+            isHiddenFromEmployee: { $ne: true } // Excludes tasks where this is true
+        })
             .populate('school', 'schoolName address location')
             .sort({ createdAt: -1 }); // Newest first
 
@@ -1707,12 +1710,12 @@ employeeRouter.delete("/profile-picture", userAuth, async (req, res) => {
 });
 
 // ============================================================================
-// 34. DELETE ASSIGNED TASKS
+// 34. HIDE ASSIGNED TASKS FROM FEED (SOFT DELETE)
 // ============================================================================
 employeeRouter.delete('/tasks/:taskId', userAuth, async (req, res) => {
     try {
         const { taskId } = req.params;
-        const employeeId = req.user._id; // Extracted from userAuth middleware
+        const employeeId = req.user._id;
 
         // Make sure the task exists and belongs to the employee
         const task = await Task.findOne({ _id: taskId, teacher: employeeId });
@@ -1721,18 +1724,21 @@ employeeRouter.delete('/tasks/:taskId', userAuth, async (req, res) => {
             return res.status(404).json({ success: false, message: "Task not found." });
         }
 
-        // Only allow deleting tasks that have been resolved (Accepted or Rejected)
+        // Only allow hiding tasks that have been resolved (Accepted or Rejected)
         if (task.status === 'Pending') {
-            return res.status(400).json({ success: false, message: "You cannot delete a pending task." });
+            return res.status(400).json({ success: false, message: "You cannot clear a pending task. Please accept or reject it first." });
         }
 
-        await Task.findByIdAndDelete(taskId);
+        // --- THE FIX: Soft Delete instead of hard delete ---
+        // We do NOT use findByIdAndDelete anymore. We just update the flag.
+        task.isHiddenFromEmployee = true;
+        await task.save();
 
-        res.status(200).json({ success: true, message: "Task removed from your feed." });
+        res.status(200).json({ success: true, message: "Task cleared from your feed." });
 
     } catch (error) {
-        console.error("Error deleting task:", error);
-        res.status(500).json({ success: false, message: "Server error deleting task." });
+        console.error("Error hiding task:", error);
+        res.status(500).json({ success: false, message: "Server error clearing task." });
     }
 });
 

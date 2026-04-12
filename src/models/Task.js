@@ -33,6 +33,10 @@ const TaskSchema = new mongoose.Schema({
         enum: ['Pending', 'Accepted', 'Rejected'],
         default: 'Pending'
     },
+    isHiddenFromEmployee: {
+        type: Boolean,
+        default: false
+    },
     rejectReason: {
         type: String
     }
