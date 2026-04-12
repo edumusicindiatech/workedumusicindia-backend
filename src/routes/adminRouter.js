@@ -731,10 +731,10 @@ adminRouter.post('/employees/:id/assign-task', userAuth, adminAuth, async (req, 
     try {
         const { id } = req.params;
         // Updated to receive the separated fields
-        const { 
-            schoolName, schoolAddress, latitude, longitude, 
-            taskDescription, category, daysAllotted, 
-            startDate, endDate, startTime, endTime 
+        const {
+            schoolName, schoolAddress, latitude, longitude,
+            taskDescription, category, daysAllotted,
+            startDate, endDate, startTime, endTime
         } = req.body;
 
         const employee = await User.findById(id);
@@ -765,6 +765,15 @@ adminRouter.post('/employees/:id/assign-task', userAuth, adminAuth, async (req, 
         if (latitude && longitude) {
             lat = parseFloat(latitude);
             lng = parseFloat(longitude);
+
+            // --- NEW: Geographic Validation ---
+            if (isNaN(lat) || isNaN(lng)) {
+                return res.status(400).json({ success: false, message: "Invalid geofence coordinates provided." });
+            }
+            // Check if coordinates fall within India's approximate bounding box
+            if (lat < 6.0 || lat > 38.0 || lng < 68.0 || lng > 98.0) {
+                return res.status(400).json({ success: false, message: "Coordinates must be located within India." });
+            }
         }
 
         let school = await School.findOne({ schoolName: { $regex: new RegExp(`^${schoolName}$`, 'i') } });
@@ -790,11 +799,11 @@ adminRouter.post('/employees/:id/assign-task', userAuth, adminAuth, async (req, 
 
         // 4. CREATE TASK (Using new individual fields)
         const newTask = await Task.create({
-            teacher: id, 
-            school: school._id, 
-            taskDescription, 
-            category: category || "Junior Band", 
-            daysAllotted, 
+            teacher: id,
+            school: school._id,
+            taskDescription,
+            category: category || "Junior Band",
+            daysAllotted,
             startDate: istStartDate,
             endDate: endDate ? istEndDate : null,
             startTime,
@@ -806,15 +815,15 @@ adminRouter.post('/employees/:id/assign-task', userAuth, adminAuth, async (req, 
 
         // 5. NOTIFICATIONS AND EMAILS
         const taskTitle = `Assignment at ${school.schoolName}`;
-        
+
         // Convert 24hr to 12hr for email display if needed, or simply pass the string
         const format12H = (time) => {
-            if(!time) return "";
+            if (!time) return "";
             const [h, m] = time.split(':');
             let hr = parseInt(h);
             const ampm = hr >= 12 ? 'PM' : 'AM';
             hr = hr % 12 || 12;
-            return `${hr < 10 ? '0'+hr : hr}:${m} ${ampm}`;
+            return `${hr < 10 ? '0' + hr : hr}:${m} ${ampm}`;
         };
         const scheduleString = `${daysAllotted.join(', ')} (${format12H(startTime)} - ${format12H(endTime)})`;
 
@@ -853,9 +862,9 @@ adminRouter.post('/employees/:id/assign-task', userAuth, adminAuth, async (req, 
 adminRouter.put('/tasks/:taskId', userAuth, adminAuth, async (req, res) => {
     try {
         const { taskId } = req.params;
-        const { 
+        const {
             schoolName, schoolAddress, latitude, longitude,
-            taskDescription, category, startDate, endDate, startTime, endTime, daysAllotted, status 
+            taskDescription, category, startDate, endDate, startTime, endTime, daysAllotted, status
         } = req.body;
 
         const task = await Task.findById(taskId).populate('school').populate('teacher');
@@ -892,15 +901,25 @@ adminRouter.put('/tasks/:taskId', userAuth, adminAuth, async (req, res) => {
         const changes = [];
         const schoolUpdates = {};
 
-        // 2. PROCESS GEOLOCATION & SCHOOL UPDATES
-        if (latitude && longitude) {
+        // 2. PROCESS GEOLOCATION & SCHOOL UPDATES (WITH STRICT INDIA BOUNDARIES)
+        if (latitude !== undefined && longitude !== undefined && latitude !== '' && longitude !== '') {
             const lat = parseFloat(latitude);
             const lng = parseFloat(longitude);
-            if (!isNaN(lat) && !isNaN(lng) && lat >= 6 && lat <= 38 && lng >= 68 && lng <= 98) {
-                schoolUpdates.location = { type: 'Point', coordinates: [lng, lat] }; // GeoJSON Standard
-                changes.push({ field: "Geolocation", oldValue: "Updated", newValue: "New Location" });
+            
+            // Validate numbers
+            if (isNaN(lat) || isNaN(lng)) {
+                return res.status(400).json({ success: false, message: "Invalid geofence coordinates provided." });
             }
+            
+            // Check if coordinates fall within India's approximate bounding box
+            if (lat < 6.0 || lat > 38.0 || lng < 68.0 || lng > 98.0) {
+                return res.status(400).json({ success: false, message: "Coordinates must be located within India." });
+            }
+
+            schoolUpdates.location = { type: 'Point', coordinates: [lng, lat] }; // GeoJSON Standard
+            changes.push({ field: "Geolocation", oldValue: "Updated", newValue: "New Location" });
         }
+        
         if (schoolName && task.school.schoolName !== schoolName) {
             schoolUpdates.schoolName = schoolName;
             changes.push({ field: "School Name", oldValue: task.school.schoolName, newValue: schoolName });
@@ -916,9 +935,9 @@ adminRouter.put('/tasks/:taskId', userAuth, adminAuth, async (req, res) => {
         }
 
         // 3. PROCESS TASK UPDATES
-        const fieldLabels = { 
-            taskDescription: "Description", category: "Category", 
-            startTime: "Start Time", endTime: "End Time", status: "Status" 
+        const fieldLabels = {
+            taskDescription: "Description", category: "Category",
+            startTime: "Start Time", endTime: "End Time", status: "Status"
         };
 
         Object.keys(fieldLabels).forEach(key => {
@@ -952,17 +971,46 @@ adminRouter.put('/tasks/:taskId', userAuth, adminAuth, async (req, res) => {
 
         await task.save();
 
+        // 3.5 SYNC TO MIRRORED ASSIGNMENT ARRAY (If task was already accepted)
+        if (task.status === 'Accepted' || req.body.status === 'Accepted') {
+            const employeeDoc = await User.findById(employee._id);
+            const mirroredAssignmentIndex = employeeDoc.assignments.findIndex(
+                a => a.referenceTaskId && a.referenceTaskId.toString() === task._id.toString()
+            );
+
+            if (mirroredAssignmentIndex !== -1) {
+                const mirrored = employeeDoc.assignments[mirroredAssignmentIndex];
+                
+                if (startDate) mirrored.startDate = istStartDate;
+                if (endDate !== undefined) mirrored.endDate = endDate ? new Date(`${endDate}T23:59:59.999+05:30`) : null;
+                if (startTime) mirrored.startTime = startTime;
+                if (endTime) mirrored.endTime = endTime;
+                if (daysAllotted) mirrored.allowedDays = daysAllotted;
+                if (category) mirrored.category = category;
+                
+                if (latitude !== undefined && longitude !== undefined) {
+                    mirrored.geofence = {
+                        latitude: parseFloat(latitude),
+                        longitude: parseFloat(longitude)
+                    };
+                }
+                
+                // Save the synced assignment block
+                await employeeDoc.save();
+            }
+        }
+
         // 4. NOTIFICATIONS & EMAILS
         const changeSummary = changes.map(c => c.field).join(', ');
         const displaySchoolName = schoolName || task.school.schoolName;
         const taskTitle = `Assignment at ${displaySchoolName}`;
 
         if (await canSendEmailToUser(employee)) {
-            const formattedTask = { 
-                description: task.taskDescription, 
-                dueDate: `${task.daysAllotted.join(', ')} (${task.startTime} - ${task.endTime})`, 
-                status: task.status, 
-                rejectionReason: task.rejectReason 
+            const formattedTask = {
+                description: task.taskDescription,
+                dueDate: `${task.daysAllotted.join(', ')} (${task.startTime} - ${task.endTime})`,
+                status: task.status,
+                rejectionReason: task.rejectReason
             };
             sendEmployeeTaskUpdatedEmail(employee.email, employee.name, taskTitle, changes, formattedTask);
         }
@@ -1007,9 +1055,14 @@ adminRouter.delete('/tasks/:taskId', userAuth, adminAuth, async (req, res) => {
         const employee = task.teacher;
         const taskTitle = `Assignment at ${task.school.schoolName}`;
 
+        // 1. Delete the task document
         await Task.findByIdAndDelete(taskId);
 
-
+        // --- NEW: Remove the mirrored task from the employee's assignments array ---
+        await User.updateOne(
+            { _id: employee._id },
+            { $pull: { assignments: { referenceTaskId: taskId } } }
+        );
 
         if (await canSendEmailToUser(employee)) {
             sendEmployeeTaskRevokedEmail(employee.email, employee.name, taskTitle);

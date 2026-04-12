@@ -485,29 +485,48 @@ employeeRouter.put('/tasks/:taskId/respond', userAuth, async (req, res) => {
 
         if (status === 'Accepted') {
             const employee = await User.findById(req.user._id);
-            let startTime = "";
-            let endTime = "";
-            if (task.timing && task.timing.includes('-')) {
-                const parts = task.timing.split('-');
-                startTime = parts[0].trim();
-                endTime = parts[1].trim();
-            }
 
-            const coords = task.school?.location?.coordinates || [0, 0];
-            const newAssignment = {
-                school: task.school._id,
-                category: task.category || "Junior Band",
-                startDate: new Date(),
-                startTime: startTime,
-                endTime: endTime,
-                allowedDays: task.daysAllotted,
-                geofence: {
-                    latitude: parseFloat(coords[1] || 0),
-                    longitude: parseFloat(coords[0] || 0)
+            // --- NEW: Prevent duplicate assignment mirroring ---
+            const alreadyAssigned = employee.assignments.some(
+                a => a.referenceTaskId?.toString() === task._id.toString()
+            );
+
+            if (!alreadyAssigned) {
+                // Ensure we have fallback times in case task uses the old 'timing' string
+                let startTime = task.startTime || "";
+                let endTime = task.endTime || "";
+
+                if (!startTime && !endTime && task.timing && task.timing.includes('-')) {
+                    const parts = task.timing.split('-');
+                    startTime = parts[0].trim();
+                    endTime = parts[1].trim();
                 }
-            };
-            employee.assignments.push(newAssignment);
-            await employee.save();
+
+                const coords = task.school?.location?.coordinates || [0, 0];
+
+                const newAssignment = {
+                    school: task.school._id,
+                    category: task.category || "Junior Band",
+
+                    // --- NEW: Map exact dates from the task ---
+                    startDate: task.startDate || new Date(),
+                    endDate: task.endDate || null,
+                    startTime: startTime,
+                    endTime: endTime,
+                    allowedDays: task.daysAllotted,
+                    geofence: {
+                        latitude: parseFloat(coords[1] || 0),
+                        longitude: parseFloat(coords[0] || 0)
+                    },
+
+                    // --- NEW: Tags to link this assignment to the task ---
+                    isTask: true,
+                    referenceTaskId: task._id
+                };
+
+                employee.assignments.push(newAssignment);
+                await employee.save();
+            }
         }
 
         const taskTitle = `Assignment at ${task.school.schoolName}`;

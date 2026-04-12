@@ -6,7 +6,9 @@ const assignmentSchema = new mongoose.Schema({
     startDate: { type: Date, required: true },
     endDate: { type: Date },
     startTime: { type: String, required: true }, // e.g., "08:00 AM"
-    endTime: { type: String, required: true },   // e.g., "12:00 PM"
+    endTime: { type: String, required: true },   // e.g., "12:00 PM",
+    isTask: { type: Boolean, default: false },
+    referenceTaskId: { type: mongoose.Schema.Types.ObjectId, ref: 'Task', default: null },
     allowedDays: [{ type: String, enum: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] }],
     geofence: {
         latitude: { type: Number, required: true },

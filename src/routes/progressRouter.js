@@ -94,7 +94,7 @@ progressRouter.get('/:teacherId/records', userAuth, adminAuth, async (req, res) 
 });
 
 // ============================================================================
-// 3. EXPORT EXCEL (WITH HIGH-CONTRAST COLORED SUMMARY & LEAVES)
+// 3. EXPORT EXCEL (WITH TASK IDENTIFICATION & GRAND TOTALS)
 // ============================================================================
 progressRouter.get('/:teacherId/export/:month', userAuth, adminAuth, async (req, res) => {
     try {
@@ -126,7 +126,7 @@ progressRouter.get('/:teacherId/export/:month', userAuth, adminAuth, async (req,
 
         worksheet.columns = [
             { header: 'Date', key: 'date', width: 22 },
-            { header: 'School', key: 'school', width: 35 }, // Slightly widened for the task tag
+            { header: 'School', key: 'school', width: 40 }, 
             { header: 'Category (Band)', key: 'band', width: 22 },
             { header: 'Status', key: 'status', width: 15 },
             { header: 'Check In', key: 'checkIn', width: 15 },
@@ -140,13 +140,27 @@ progressRouter.get('/:teacherId/export/:month', userAuth, adminAuth, async (req,
         worksheet.getRow(1).alignment = { horizontal: 'center' };
 
         const categorizedStats = {};
+        
+        // --- NEW: Global tracker for all combined schools ---
+        const grandTotals = {
+            Present: 0,
+            Late: 0,
+            Absent: 0,
+            EventsHolidays: 0,
+            Media: 0
+        };
 
         records.forEach(record => {
             const baseSchoolName = record.school?.schoolName || 'Unassigned';
-
-            // --- NEW: Add "(Task)" to the school name if the record is a task ---
-            const schoolName = record.isTask ? `${baseSchoolName} (Task)` : baseSchoolName;
             const bandName = record.band || 'General';
+
+            const isTemporaryTask = teacher.assignments.some(
+                a => a.school?.toString() === record.school?._id?.toString() && 
+                     a.category === bandName && 
+                     a.isTask === true
+            );
+
+            const schoolName = isTemporaryTask ? `${baseSchoolName} (Task)` : baseSchoolName;
 
             if (!categorizedStats[schoolName]) categorizedStats[schoolName] = {};
             if (!categorizedStats[schoolName][bandName]) {
@@ -158,21 +172,31 @@ progressRouter.get('/:teacherId/export/:month', userAuth, adminAuth, async (req,
             const status = record.status;
             if (categorizedStats[schoolName][bandName][status] !== undefined) {
                 categorizedStats[schoolName][bandName][status]++;
+                
+                // --- NEW: Add to Grand Totals ---
+                if (status === 'Present') grandTotals.Present++;
+                if (status === 'Late') grandTotals.Late++;
+                if (status === 'Absent') grandTotals.Absent++;
+                if (status === 'Event' || status === 'Holiday') grandTotals.EventsHolidays++;
             }
-            categorizedStats[schoolName][bandName].Media += (record.mediaFilesCount || 0);
+            
+            const mediaCount = record.mediaFilesCount || 0;
+            categorizedStats[schoolName][bandName].Media += mediaCount;
+            grandTotals.Media += mediaCount; // --- NEW: Add to Grand Totals ---
 
             worksheet.addRow({
                 date: new Date(record.date).toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', month: 'short', day: 'numeric', year: 'numeric' }),
-                school: schoolName, // Utilizing the updated school name
+                school: schoolName, 
                 band: bandName,
                 status: record.status,
                 checkIn: record.checkInTime ? new Date(record.checkInTime).toLocaleTimeString('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' }) : '--',
                 checkOut: record.checkOutTime ? new Date(record.checkOutTime).toLocaleTimeString('en-US', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' }) : '--',
-                media: record.mediaFilesCount || 0,
+                media: mediaCount,
                 notes: record.teacherNote || record.lateReason || ''
             });
         });
 
+        // Add leaves...
         leaves.forEach(leave => {
             const from = new Date(leave.fromDate).toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', month: 'short', day: 'numeric' });
             const to = new Date(leave.toDate).toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', month: 'short', day: 'numeric' });
@@ -190,35 +214,28 @@ progressRouter.get('/:teacherId/export/:month', userAuth, adminAuth, async (req,
             });
         });
 
-        // ---------------------------------------------------------
-        // HIGH CONTRAST COLORED SUMMARY SECTION
-        // ---------------------------------------------------------
+        // Summary generation logic
         worksheet.addRow([]);
         worksheet.addRow([]);
-
         const summaryHeaderRow = worksheet.addRow(['📊 ATTENDANCE SUMMARY BY SCHOOL & CATEGORY']);
         summaryHeaderRow.font = { bold: true, size: 14, color: { argb: 'FFFFFFFF' } };
-        summaryHeaderRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4338CA' } };
+        summaryHeaderRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4338CA' } }; // Indigo
         summaryHeaderRow.alignment = { horizontal: 'center', vertical: 'middle' };
         worksheet.mergeCells(`A${summaryHeaderRow.number}:H${summaryHeaderRow.number}`);
-        worksheet.getRow(summaryHeaderRow.number).height = 30;
 
         for (const school in categorizedStats) {
             worksheet.addRow([]);
-
             const schoolRow = worksheet.addRow([`🏫 ${school}`]);
             schoolRow.font = { bold: true, size: 12, color: { argb: 'FFFFFFFF' } };
-            schoolRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF059669' } };
+            schoolRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF059669' } }; // Green
             worksheet.mergeCells(`A${schoolRow.number}:H${schoolRow.number}`);
 
             for (const band in categorizedStats[school]) {
                 const stats = categorizedStats[school][band];
-
                 const bandRow = worksheet.addRow(['', `📌 ${band}`]);
                 bandRow.font = { bold: true, italic: true, color: { argb: 'FF000000' } };
-                bandRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEF08A' } };
+                bandRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEF08A' } }; // Yellow
                 worksheet.mergeCells(`B${bandRow.number}:H${bandRow.number}`);
-
                 worksheet.addRow(['', '', `✅ Present: ${stats.Present}`]);
                 worksheet.addRow(['', '', `⚠️ Late: ${stats.Late}`]);
                 worksheet.addRow(['', '', `❌ Absent: ${stats.Absent}`]);
@@ -227,31 +244,44 @@ progressRouter.get('/:teacherId/export/:month', userAuth, adminAuth, async (req,
             }
         }
 
+        // Add Leaves Summary
+        let totalLeaveDays = 0;
         if (leaves.length > 0) {
             worksheet.addRow([]);
-
             const leaveRow = worksheet.addRow(['🌴 APPROVED LEAVES SUMMARY']);
             leaveRow.font = { bold: true, size: 12, color: { argb: 'FFFFFFFF' } };
-            leaveRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE11D48' } };
+            leaveRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE11D48' } }; // Rose Red
             worksheet.mergeCells(`A${leaveRow.number}:H${leaveRow.number}`);
-
             worksheet.addRow(['', '', `🗓️ Total Approved Requests: ${leaves.length}`]);
 
-            let totalLeaveDays = 0;
             leaves.forEach(l => {
                 const f = new Date(l.fromDate);
                 const t = new Date(l.toDate);
                 const diffTime = Math.abs(t - f);
-                const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
-                totalLeaveDays += diffDays;
+                totalLeaveDays += Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
             });
-
             worksheet.addRow(['', '', `⏳ Total Days on Leave: ${totalLeaveDays}`]);
         }
 
+        // --- NEW: GRAND TOTALS SECTION ---
+        worksheet.addRow([]);
+        worksheet.addRow([]);
+        const grandTotalRow = worksheet.addRow(['🏆 GRAND TOTALS (ALL ASSIGNMENTS & TASKS)']);
+        grandTotalRow.font = { bold: true, size: 14, color: { argb: 'FFFFFFFF' } };
+        grandTotalRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF7C3AED' } }; // Purple
+        grandTotalRow.alignment = { horizontal: 'center', vertical: 'middle' };
+        worksheet.mergeCells(`A${grandTotalRow.number}:H${grandTotalRow.number}`);
+
+        worksheet.addRow(['', '', `✅ Total Present: ${grandTotals.Present}`]);
+        worksheet.addRow(['', '', `⚠️ Total Late: ${grandTotals.Late}`]);
+        worksheet.addRow(['', '', `❌ Total Absent: ${grandTotals.Absent}`]);
+        worksheet.addRow(['', '', `🎉 Total Events/Holidays: ${grandTotals.EventsHolidays}`]);
+        worksheet.addRow(['', '', `📸 Total Media Sent: ${grandTotals.Media}`]);
+        worksheet.addRow(['', '', `🌴 Total Days on Leave: ${totalLeaveDays}`]);
+
+        // Output file
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
         res.setHeader('Content-Disposition', `attachment; filename=${teacher.name.replace(/\s+/g, '_')}_${month}_Report.xlsx`);
-
         await workbook.xlsx.write(res);
         res.end();
 
