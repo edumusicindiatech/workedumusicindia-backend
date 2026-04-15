@@ -1,6 +1,7 @@
 const express = require('express');
 const chatRouter = express.Router();
-const { PutObjectCommand } = require('@aws-sdk/client-s3');
+// ADDED GetObjectCommand to the import
+const { PutObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const crypto = require('crypto');
 
@@ -37,6 +38,42 @@ chatRouter.post('/generate-presigned-url', userAuth, async (req, res) => {
         res.json({ presignedUrl, publicUrl });
     } catch (error) {
         res.status(500).json({ error: "Failed to generate upload URL" });
+    }
+});
+
+// --- NEW ROUTE: GENERATE SECURE DOWNLOAD URL ---
+chatRouter.post('/generate-download-url', userAuth, async (req, res) => {
+    try {
+        const { fileUrl } = req.body;
+
+        if (!fileUrl) {
+            return res.status(400).json({ success: false, error: "File URL is required" });
+        }
+
+        // Extract the Object Key from the public URL
+        // Example: https://pub-xyz.r2.dev/image.jpg -> image.jpg
+        const urlParts = new URL(fileUrl);
+        const key = urlParts.pathname.startsWith('/')
+            ? urlParts.pathname.substring(1)
+            : urlParts.pathname;
+
+        // Extract the filename to name the downloaded file
+        const filename = key.split('/').pop();
+
+        const command = new GetObjectCommand({
+            Bucket: process.env.CHAT_MEDIA_BUCKET.replace(/['"]/g, ''),
+            Key: key,
+            // This header forces the browser to download the file instead of viewing it
+            ResponseContentDisposition: `attachment; filename="${filename}"`,
+        });
+
+        // Generate a URL valid for 60 seconds
+        const downloadUrl = await getSignedUrl(chatS3Client, command, { expiresIn: 60 });
+
+        res.json({ success: true, downloadUrl });
+    } catch (error) {
+        console.error("Presigned Download URL Error:", error);
+        res.status(500).json({ success: false, error: "Failed to generate download link" });
     }
 });
 
