@@ -905,12 +905,12 @@ adminRouter.put('/tasks/:taskId', userAuth, adminAuth, async (req, res) => {
         if (latitude !== undefined && longitude !== undefined && latitude !== '' && longitude !== '') {
             const lat = parseFloat(latitude);
             const lng = parseFloat(longitude);
-            
+
             // Validate numbers
             if (isNaN(lat) || isNaN(lng)) {
                 return res.status(400).json({ success: false, message: "Invalid geofence coordinates provided." });
             }
-            
+
             // Check if coordinates fall within India's approximate bounding box
             if (lat < 6.0 || lat > 38.0 || lng < 68.0 || lng > 98.0) {
                 return res.status(400).json({ success: false, message: "Coordinates must be located within India." });
@@ -919,7 +919,7 @@ adminRouter.put('/tasks/:taskId', userAuth, adminAuth, async (req, res) => {
             schoolUpdates.location = { type: 'Point', coordinates: [lng, lat] }; // GeoJSON Standard
             changes.push({ field: "Geolocation", oldValue: "Updated", newValue: "New Location" });
         }
-        
+
         if (schoolName && task.school.schoolName !== schoolName) {
             schoolUpdates.schoolName = schoolName;
             changes.push({ field: "School Name", oldValue: task.school.schoolName, newValue: schoolName });
@@ -980,21 +980,21 @@ adminRouter.put('/tasks/:taskId', userAuth, adminAuth, async (req, res) => {
 
             if (mirroredAssignmentIndex !== -1) {
                 const mirrored = employeeDoc.assignments[mirroredAssignmentIndex];
-                
+
                 if (startDate) mirrored.startDate = istStartDate;
                 if (endDate !== undefined) mirrored.endDate = endDate ? new Date(`${endDate}T23:59:59.999+05:30`) : null;
                 if (startTime) mirrored.startTime = startTime;
                 if (endTime) mirrored.endTime = endTime;
                 if (daysAllotted) mirrored.allowedDays = daysAllotted;
                 if (category) mirrored.category = category;
-                
+
                 if (latitude !== undefined && longitude !== undefined) {
                     mirrored.geofence = {
                         latitude: parseFloat(latitude),
                         longitude: parseFloat(longitude)
                     };
                 }
-                
+
                 // Save the synced assignment block
                 await employeeDoc.save();
             }
@@ -2180,15 +2180,13 @@ adminRouter.delete('/profile-picture', userAuth, adminAuth, async (req, res) => 
 });
 
 // ==========================================
-// 31. FETCH ADMIN PROFILE
+// 31. FETCH ADMIN PROFILE (FIXED: GRABS ALL DATA)
 // ==========================================
 adminRouter.get('/me/profile', userAuth, adminAuth, async (req, res) => {
     try {
-        // req.user is already attached by your userAuth middleware
-        // We just need to select the fields we want to send back to the frontend
-
+        // Using '-password' guarantees we get profilePicture, preferences, and everything else
         const adminData = await User.findById(req.user._id)
-            .select('name email role profilePicture mobile') // Add any other fields you want to display
+            .select('-password')
             .lean();
 
         if (!adminData) {

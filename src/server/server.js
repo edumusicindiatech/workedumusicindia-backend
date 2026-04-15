@@ -127,11 +127,13 @@ io.on('connection', (socket) => {
     // 2. WebRTC Call Initiation (Sending the offer)
     socket.on('call_user', (data) => {
         if (!data || !data.userToCall) return;
-        const { userToCall, signalData, from, callerName } = data;
+        // ---> FIX: Destructured profilePicture from incoming data <---
+        const { userToCall, signalData, from, callerName, profilePicture } = data; 
         socket.to(String(userToCall)).emit('incoming_call', {
             signal: signalData,
             from,
-            callerName
+            callerName,
+            profilePicture // ---> FIX: Relaying it to the receiver <---
         });
     });
 
@@ -304,7 +306,6 @@ io.on('connection', (socket) => {
         }
     });
 });
-
 
 app.use((req, res, next) => {
     req.io = io;

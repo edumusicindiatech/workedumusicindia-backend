@@ -1744,13 +1744,13 @@ employeeRouter.delete('/tasks/:taskId', userAuth, async (req, res) => {
 });
 
 // ============================================================================
-// 35. HIDE ASSIGNED TASKS FROM FEED (SOFT DELETE)
+// 35. GET PEERS FOR CHAT (FIXED: NOW INCLUDES PROFILE PICTURE)
 // ============================================================================
 employeeRouter.get('/peers', userAuth, async (req, res) => {
     try {
-        // Find all users. We will filter out the current user on the frontend.
-        // We use .select() to only return safe data, excluding passwords, etc.
-        const peers = await User.find({}).select('name email role profilePicture');
+        // Explicitly fetch all users, excluding passwords, but INCLUDING profilePicture
+        const peers = await User.find({ _id: { $ne: req.user._id } })
+            .select('_id name email role profilePicture designation zone');
 
         res.status(200).json({
             success: true,
