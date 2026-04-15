@@ -108,6 +108,22 @@ io.on('connection', (socket) => {
         socket.to(String(data.recipientId)).emit('receive_message', data);
     });
 
+    socket.on('message_delivered', (data) => {
+        if (!data || !data.senderId) return;
+        socket.to(String(data.senderId)).emit('messages_status_update', {
+            viewerId: data.recipientId,
+            status: 'delivered'
+        });
+    });
+
+    socket.on('mark_chat_seen', (data) => {
+        if (!data || !data.senderId) return;
+        socket.to(String(data.senderId)).emit('messages_status_update', {
+            viewerId: data.recipientId,
+            status: 'seen'
+        });
+    });
+
     // 2. WebRTC Call Initiation (Sending the offer)
     socket.on('call_user', (data) => {
         if (!data || !data.userToCall) return;
