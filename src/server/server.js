@@ -23,8 +23,9 @@ const LearningRouter = require('../routes/LearningRouter');
 // --- NEW IMPORTS FOR SOS SYSTEM ---
 const User = require('../models/User');
 const School = require('../models/School');
-const Notification = require('../models/Notification'); // Added Notification Model
+const Notification = require('../models/Notification');
 const { sendSOSEmergencyEmail } = require('../utils/emailService');
+const chatRouter = require('../routes/chatRouter');
 
 const app = express();
 const server = http.createServer(app);
@@ -45,6 +46,9 @@ const io = new Server(server, {
 // --- IN-MEMORY LOCATION TRACKER & MATH HELPER ---
 const activeLocations = new Map();
 
+// --- NEW: CHAT & CALL PRESENCE TRACKER ---
+const onlineUsers = new Map(); // Maps userId -> socket.id
+
 const calculateDistanceMeters = (lat1, lon1, lat2, lon2) => {
     const R = 6371e3; // Earth's radius in meters
     const dLat = (lat2 - lat1) * (Math.PI / 180);
@@ -56,9 +60,16 @@ const calculateDistanceMeters = (lat1, lon1, lat2, lon2) => {
 };
 
 io.on('connection', (socket) => {
-    // --- EXISTING ROOM LOGIC ---
+    // --- UPDATED ROOM LOGIC WITH SAFETY CHECKS ---
     socket.on('join_room', (userId) => {
-        socket.join(userId);
+        if (!userId) return; // Prevent crash if frontend sends null
+
+        const safeUserId = String(userId); // Safely cast to string
+        socket.join(safeUserId);
+
+        // Add to presence tracker and broadcast the updated list of online IDs
+        onlineUsers.set(safeUserId, socket.id);
+        io.emit('online_users_updated', Array.from(onlineUsers.keys()));
     });
 
     // --- ADMIN LIVE TRACKING ROOM ---
@@ -69,11 +80,12 @@ io.on('connection', (socket) => {
 
     // --- EMPLOYEE LOCATION EMITTER ---
     socket.on('update_live_location', (data) => {
+        if (!data) return;
         const { employeeId, lat, lng } = data;
 
         if (employeeId && lat && lng) {
             // Update the in-memory tracker for SOS routing (valid for 15 minutes)
-            activeLocations.set(employeeId.toString(), { lat, lng, timestamp: Date.now() });
+            activeLocations.set(String(employeeId), { lat, lng, timestamp: Date.now() });
 
             // Broadcast to the admins listening in the room
             io.to('admin_live_tracking').emit('employee_location_changed', {
@@ -85,8 +97,63 @@ io.on('connection', (socket) => {
         }
     });
 
+    // ==========================================
+    // CHAT & WEBRTC SIGNALING MODULE
+    // ==========================================
+
+    // 1. Text & Media Message Router
+    socket.on('send_message', (data) => {
+        if (!data || !data.recipientId) return; // Safety check
+        // Emits directly to the recipient's personal room safely
+        socket.to(String(data.recipientId)).emit('receive_message', data);
+    });
+
+    // 2. WebRTC Call Initiation (Sending the offer)
+    socket.on('call_user', (data) => {
+        if (!data || !data.userToCall) return;
+        const { userToCall, signalData, from, callerName } = data;
+        socket.to(String(userToCall)).emit('incoming_call', {
+            signal: signalData,
+            from,
+            callerName
+        });
+    });
+
+    // 3. WebRTC Call Acceptance (Sending the answer)
+    socket.on('answer_call', (data) => {
+        if (!data || !data.to) return;
+        const { to, signal } = data;
+        socket.to(String(to)).emit('call_accepted', signal);
+    });
+
+    // 4. Terminating a Call
+    socket.on('end_call', (data) => {
+        if (!data || !data.to) return;
+        const { to } = data;
+        socket.to(String(to)).emit('call_ended');
+    });
+
+    // 5. WebRTC ICE Candidates (For Audio Streaming)
+    socket.on('ice_candidate', (data) => {
+        if (!data || !data.to) return;
+        socket.to(String(data.to)).emit('ice_candidate', {
+            candidate: data.candidate,
+            from: data.from
+        });
+    });
+
+    // 6. Delete Message Relay
+    socket.on('delete_message', (data) => {
+        if (!data || !data.recipientId) return;
+        socket.to(String(data.recipientId)).emit('message_deleted', {
+            messageId: data.messageId,
+            timestamp: data.timestamp
+        });
+    });
+
     // --- TIERED EMERGENCY SOS ROUTING ---
     socket.on('trigger_sos', async (data) => {
+        if (!data || !data.employeeId) return;
         const { employeeId, lat, lng } = data;
 
         try {
@@ -152,7 +219,7 @@ io.on('connection', (socket) => {
             const timestamp = new Date();
             const notificationsToSave = [];
 
-            // Handle Admins (Removed ambiguous 'admin_live_tracking' emit to prevent dupes)
+            // Handle Admins
             for (const admin of admins) {
                 const adminIdStr = admin._id.toString();
                 io.to(adminIdStr).emit('sos_alert_received', {
@@ -160,7 +227,7 @@ io.on('connection', (socket) => {
                 });
 
                 notificationsToSave.push({
-                    recipient: adminIdStr, // Matching your schema's 'recipient' field
+                    recipient: adminIdStr,
                     title: '🚨 EMERGENCY SOS',
                     message: `${sender.name} has triggered an emergency alert!`,
                     type: 'Warning',
@@ -175,7 +242,7 @@ io.on('connection', (socket) => {
                 });
 
                 notificationsToSave.push({
-                    recipient: peerId, // Matching your schema's 'recipient' field
+                    recipient: peerId,
                     title: '🚨 EMERGENCY SOS',
                     message: `${sender.name} has triggered an emergency alert!`,
                     type: 'Warning',
@@ -188,7 +255,7 @@ io.on('connection', (socket) => {
                 await Notification.insertMany(notificationsToSave);
             }
 
-            // 6. Blast Priority Emails (BYPASSING PREFERENCES)
+            // 6. Blast Priority Emails
             for (const recipient of recipients) {
                 if (recipient.email) {
                     await sendSOSEmergencyEmail(
@@ -205,6 +272,19 @@ io.on('connection', (socket) => {
 
         } catch (error) {
             console.error("Critical error processing SOS trigger:", error);
+        }
+    });
+
+    // ==========================================
+    // DISCONNECT HANDLER FOR ONLINE STATUS
+    // ==========================================
+    socket.on('disconnect', () => {
+        for (const [userId, socketId] of onlineUsers.entries()) {
+            if (socketId === socket.id) {
+                onlineUsers.delete(userId);
+                io.emit('online_users_updated', Array.from(onlineUsers.keys()));
+                break;
+            }
         }
     });
 });
@@ -240,6 +320,7 @@ app.use('/api/employee/notifications', notificationRouter);
 app.use('/api/admin/communication', communicationRouter);
 app.use('/api/admin/progress', progressRouter);
 app.use('/api/learning', LearningRouter);
+app.use('/api/chat', chatRouter);
 
 const PORT = process.env.PORT || 5000;
 

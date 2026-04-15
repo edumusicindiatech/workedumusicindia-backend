@@ -1743,4 +1743,23 @@ employeeRouter.delete('/tasks/:taskId', userAuth, async (req, res) => {
     }
 });
 
+// ============================================================================
+// 35. HIDE ASSIGNED TASKS FROM FEED (SOFT DELETE)
+// ============================================================================
+employeeRouter.get('/peers', userAuth, async (req, res) => {
+    try {
+        // Find all users. We will filter out the current user on the frontend.
+        // We use .select() to only return safe data, excluding passwords, etc.
+        const peers = await User.find({}).select('name email role profilePicture');
+
+        res.status(200).json({
+            success: true,
+            data: peers
+        });
+    } catch (error) {
+        console.error("Error fetching peers for chat:", error);
+        res.status(500).json({ success: false, message: "Failed to fetch contacts" });
+    }
+});
+
 module.exports = employeeRouter;
