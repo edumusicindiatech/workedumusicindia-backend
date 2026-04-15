@@ -12,28 +12,30 @@ const userAuth = require('../middleware/userAuth');
 chatRouter.post('/generate-presigned-url', userAuth, async (req, res) => {
     try {
         const { fileType, originalName } = req.body;
-
-        // Generate a random 16-character hex string to ensure the filename is completely unique
         const extension = originalName.split('.').pop();
         const uniqueFileName = `${crypto.randomBytes(16).toString('hex')}.${extension}`;
 
         const command = new PutObjectCommand({
-            Bucket: process.env.CHAT_MEDIA_BUCKET, // e.g., "workforce-chat-media"
+            Bucket: process.env.CHAT_MEDIA_BUCKET.replace(/['"]/g, ''),
             Key: uniqueFileName,
             ContentType: fileType,
         });
 
-        // The URL expires in 60 seconds. The frontend has 1 minute to start the upload.
         const presignedUrl = await getSignedUrl(chatS3Client, command, { expiresIn: 60 });
 
-        // The final public URL where the image will live
-        // Note: You must enable "Public Access" or link a Custom Domain to this new bucket in Cloudflare
-        const publicUrl = `${process.env.CHAT_R2_PUBLIC_DOMAIN}/${uniqueFileName}`;
+        // FORCE CORRECT FORMATTING
+        let baseUrl = process.env.CHAT_MEDIA_PUBLIC_URL.trim().replace(/\/$/, '');
 
+        // If for some reason the env only has the bucket name, this prefixing fixes it
+        if (!baseUrl.startsWith('http')) {
+            baseUrl = `https://${baseUrl}`;
+        }
+
+        const publicUrl = `${baseUrl}/${uniqueFileName}`;
+
+        console.log("DEBUG: Generated Public URL:", publicUrl); // Check your terminal for this!
         res.json({ presignedUrl, publicUrl });
-
     } catch (error) {
-        console.error("Error generating presigned URL:", error);
         res.status(500).json({ error: "Failed to generate upload URL" });
     }
 });
@@ -69,15 +71,14 @@ chatRouter.get('/messages/:conversationId', userAuth, async (req, res) => {
 
 chatRouter.post('/message', userAuth, async (req, res) => {
     try {
-        const { senderId, recipientId, text, mediaUrl, mediaType } = req.body;
+        // ADD fileSize and status to destructuring
+        const { senderId, recipientId, text, mediaUrl, mediaType, fileSize, status } = req.body;
 
-        // Find existing conversation between these two users
         let conversation = await Conversation.findOne({
             isGroup: false,
             participants: { $all: [senderId, recipientId] }
         });
 
-        // If it's their first time chatting, create a new conversation thread
         if (!conversation) {
             conversation = await Conversation.create({
                 participants: [senderId, recipientId],
@@ -85,16 +86,16 @@ chatRouter.post('/message', userAuth, async (req, res) => {
             });
         }
 
-        // Save the actual message
         const newMessage = await Message.create({
             conversationId: conversation._id,
             sender: senderId,
             text: text || "",
             mediaUrl: mediaUrl || "",
-            mediaType: mediaType || "text"
+            mediaType: mediaType || "text",
+            fileSize: fileSize || 0, // <--- ADD THIS
+            status: status || 'sent' // <--- ADD THIS
         });
 
-        // Update the conversation's last message for the sidebar preview
         conversation.lastMessage = newMessage._id;
         await conversation.save();
 
