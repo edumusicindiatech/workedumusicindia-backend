@@ -128,13 +128,13 @@ io.on('connection', (socket) => {
     // 2. WebRTC Call Initiation (Sending the offer)
     socket.on('call_user', (data) => {
         if (!data || !data.userToCall) return;
-        // ---> FIX: Destructured profilePicture from incoming data <---
-        const { userToCall, signalData, from, callerName, profilePicture } = data;
+        const { userToCall, signalData, from, callerName, profilePicture, callType } = data;
         socket.to(String(userToCall)).emit('incoming_call', {
             signal: signalData,
             from,
             callerName,
-            profilePicture // ---> FIX: Relaying it to the receiver <---
+            profilePicture,
+            callType
         });
     });
 
@@ -168,6 +168,34 @@ io.on('connection', (socket) => {
             messageId: data.messageId,
             timestamp: data.timestamp
         });
+    });
+
+    // ==========================================
+    // NEW: VIDEO UPGRADE & RENEGOTIATION MODULE
+    // ==========================================
+
+    // WebRTC Renegotiation (for screen share & video track additions)
+    socket.on('renegotiate', (data) => {
+        if (!data || !data.to) return;
+        socket.to(String(data.to)).emit('renegotiate', { signal: data.signal });
+    });
+
+    // Video Upgrade Request
+    socket.on('video_upgrade_request', (data) => {
+        if (!data || !data.to) return;
+        socket.to(String(data.to)).emit('video_upgrade_request', { from: socket.id });
+    });
+
+    // Video Upgrade Accepted
+    socket.on('video_upgrade_accepted', (data) => {
+        if (!data || !data.to) return;
+        socket.to(String(data.to)).emit('video_upgrade_accepted', { from: socket.id });
+    });
+
+    // Video Upgrade Rejected
+    socket.on('video_upgrade_rejected', (data) => {
+        if (!data || !data.to) return;
+        socket.to(String(data.to)).emit('video_upgrade_rejected', { from: socket.id });
     });
 
     // --- TIERED EMERGENCY SOS ROUTING ---
