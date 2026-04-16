@@ -2242,5 +2242,27 @@ adminRouter.put('/profile/password', userAuth, adminAuth, async (req, res) => {
     }
 });
 
+// ==========================================
+// 33. GET ALL CONTACTS FOR CHAT (INCLUDES SUPERADMIN)
+// ==========================================
+adminRouter.get('/chat-contacts', userAuth, adminAuth, async (req, res) => {
+    try {
+        // Fetch all roles except the currently logged-in user
+        const peers = await User.find({
+            role: { $in: ['Employee', 'Admin', 'SuperAdmin'] },
+            _id: { $ne: req.user._id }
+        })
+            .select('_id name email role profilePicture designation zone');
+
+        res.status(200).json({
+            success: true,
+            data: peers
+        });
+    } catch (error) {
+        console.error("Error fetching chat contacts:", error);
+        res.status(500).json({ success: false, message: "Failed to fetch chat contacts." });
+    }
+});
+
 
 module.exports = adminRouter;
