@@ -203,7 +203,7 @@ chatRouter.put('/message/delete-everyone', userAuth, async (req, res) => {
             // Check if media is safe to delete from Cloudflare
             if (msg.mediaUrl) {
                 const count = await Message.countDocuments({ mediaUrl: msg.mediaUrl });
-                if (count <= 1) { // It's only used by this exact message
+                if (count <= 1) {
                     await deleteMediaFromR2(msg.mediaUrl);
                 }
             }
@@ -213,21 +213,29 @@ chatRouter.put('/message/delete-everyone', userAuth, async (req, res) => {
             msg.mediaUrl = "";
             msg.isDeletedForEveryone = true;
             await msg.save();
-            updatedIds.push(msg._id);
+
+            // FIX: Explicitly convert ObjectId to string to prevent socket serialization bugs
+            updatedIds.push(msg._id.toString());
         }
+
+        // FIX: Securely route the socket emission
         if (updatedIds.length > 0 && req.io) {
-            // Find the conversation to get the recipient's ID
-            const conv = await Conversation.findById(validMessages[0].conversationId);
-            if (conv) {
-                const recipientId = conv.participants.find(p => p.toString() !== userId.toString());
-                if (recipientId) {
-                    req.io.to(recipientId.toString()).emit("messages_deleted_everyone", {
-                        messageIds: updatedIds
-                    });
+            try {
+                const conv = await Conversation.findById(validMessages[0].conversationId);
+                if (conv) {
+                    const recipientId = conv.participants.find(p => p.toString() !== userId.toString());
+                    if (recipientId) {
+                        console.log(`[CHAT] Firing delete-everyone to user ${recipientId.toString()} for IDs:`, updatedIds);
+                        req.io.to(recipientId.toString()).emit("messages_deleted_everyone", {
+                            messageIds: updatedIds
+                        });
+                    }
                 }
+            } catch (socketErr) {
+                console.error("[CHAT] Socket emission failed:", socketErr);
             }
         }
-        
+
         res.status(200).json({ success: true, updatedIds });
     } catch (error) {
         res.status(500).json({ success: false, error: "Failed to delete for everyone" });
