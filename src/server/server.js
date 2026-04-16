@@ -26,6 +26,7 @@ const School = require('../models/School');
 const Notification = require('../models/Notification');
 const { sendSOSEmergencyEmail } = require('../utils/emailService');
 const chatRouter = require('../routes/chatRouter');
+const autoChatMediaCleanup = require('../jobs/autoChatMediaCleanup');
 
 const app = express();
 const server = http.createServer(app);
@@ -128,7 +129,7 @@ io.on('connection', (socket) => {
     socket.on('call_user', (data) => {
         if (!data || !data.userToCall) return;
         // ---> FIX: Destructured profilePicture from incoming data <---
-        const { userToCall, signalData, from, callerName, profilePicture } = data; 
+        const { userToCall, signalData, from, callerName, profilePicture } = data;
         socket.to(String(userToCall)).emit('incoming_call', {
             signal: signalData,
             from,
@@ -352,6 +353,7 @@ connectDB().then(() => {
         startAutoAbsentCron(io);
         startCheckoutReminderCron(io);
         startWeeklyScoreCron(io);
+        autoChatMediaCleanup();
     });
 }).catch(err => {
     console.error("Failed to connect to the database", err);
