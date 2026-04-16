@@ -16,7 +16,7 @@ const deleteMediaFromR2 = async (mediaUrl) => {
     try {
         const urlParts = new URL(mediaUrl);
         const key = urlParts.pathname.startsWith('/') ? urlParts.pathname.substring(1) : urlParts.pathname;
-        
+
         const command = new DeleteObjectCommand({
             Bucket: process.env.CHAT_MEDIA_BUCKET.replace(/['"]/g, ''),
             Key: key,
@@ -184,7 +184,7 @@ chatRouter.put('/message/edit/:id', userAuth, async (req, res) => {
 // 2. Delete for Everyone (Soft Delete with Safe Storage Cleanup)
 chatRouter.put('/message/delete-everyone', userAuth, async (req, res) => {
     try {
-        const { messageIds, userId } = req.body; 
+        const { messageIds, userId } = req.body;
 
         const messages = await Message.find({ _id: { $in: messageIds }, sender: userId });
 
@@ -215,7 +215,19 @@ chatRouter.put('/message/delete-everyone', userAuth, async (req, res) => {
             await msg.save();
             updatedIds.push(msg._id);
         }
-
+        if (updatedIds.length > 0 && req.io) {
+            // Find the conversation to get the recipient's ID
+            const conv = await Conversation.findById(validMessages[0].conversationId);
+            if (conv) {
+                const recipientId = conv.participants.find(p => p.toString() !== userId.toString());
+                if (recipientId) {
+                    req.io.to(recipientId.toString()).emit("messages_deleted_everyone", {
+                        messageIds: updatedIds
+                    });
+                }
+            }
+        }
+        
         res.status(200).json({ success: true, updatedIds });
     } catch (error) {
         res.status(500).json({ success: false, error: "Failed to delete for everyone" });
@@ -230,7 +242,7 @@ chatRouter.put('/message/delete-me', userAuth, async (req, res) => {
         // 1. Add user to the deletedFor array
         await Message.updateMany(
             { _id: { $in: messageIds } },
-            { $addToSet: { deletedFor: userId } } 
+            { $addToSet: { deletedFor: userId } }
         );
 
         // 2. Check for fully orphaned messages to Hard Delete
@@ -277,7 +289,7 @@ chatRouter.put('/clear/:user1/:user2', userAuth, async (req, res) => {
         const orphanedMessages = await Message.find({
             conversationId: conversation._id,
             // Check if deletedFor array has both users (for 1-on-1 chats, length = 2)
-            [`deletedFor.${conversation.participants.length - 1}`]: { $exists: true } 
+            [`deletedFor.${conversation.participants.length - 1}`]: { $exists: true }
         });
 
         for (const msg of orphanedMessages) {
