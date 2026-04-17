@@ -6,7 +6,8 @@ const dailyReportSchema = new mongoose.Schema({
     // NEW: Explicitly reference the School so we can populate it later if needed
     schoolId: { type: mongoose.Schema.Types.ObjectId, ref: 'School', required: true },
 
-    date: { type: String, required: true }, // Format: "YYYY-MM-DD"
+    date: { type: String, required: true }, // Format: "YYYY-MM-DD",
+    shiftStartTime: { type: String },
     category: { type: String, enum: ['Regular Report', 'Event Report'], required: true },
     schoolName: { type: String, required: true },
     band: { type: String, enum: ['Junior Band', 'Senior Band'], required: true },

@@ -6,6 +6,9 @@ const attendanceSchema = new mongoose.Schema({
     band: { type: String, enum: ['Junior Band', 'Senior Band'], required: true },
     isTask: { type: Boolean, default: false },
 
+    shiftStartTime: { type: String, required: true }, // e.g., "08:00 AM"
+    shiftEndTime: { type: String, required: true },   // e.g., "11:00 AM"
+
     date: { type: String, required: true }, // Format: "YYYY-MM-DD" for easy grouping
     status: {
         type: String,
