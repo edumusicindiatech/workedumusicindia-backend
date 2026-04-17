@@ -8,6 +8,7 @@ const cron = require('node-cron');
 const chatS3Client = require('../config/chatS3Client');
 const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
+const Group = require('../models/Group'); // <-- IMPORT GROUP MODEL
 const userAuth = require('../middleware/userAuth');
 
 // --- HELPER: SAFE R2 MEDIA DELETION ---
@@ -29,7 +30,7 @@ const deleteMediaFromR2 = async (mediaUrl) => {
     }
 };
 
-// --- EXISTING S3 ROUTES ---
+// --- S3 UPLOAD/DOWNLOAD ROUTES (Unchanged) ---
 chatRouter.post('/generate-presigned-url', userAuth, async (req, res) => {
     try {
         const { fileType, originalName } = req.body;
@@ -44,10 +45,7 @@ chatRouter.post('/generate-presigned-url', userAuth, async (req, res) => {
 
         const presignedUrl = await getSignedUrl(chatS3Client, command, { expiresIn: 60 });
         let baseUrl = process.env.CHAT_MEDIA_PUBLIC_URL.trim().replace(/\/$/, '');
-
-        if (!baseUrl.startsWith('http')) {
-            baseUrl = `https://${baseUrl}`;
-        }
+        if (!baseUrl.startsWith('http')) baseUrl = `https://${baseUrl}`;
 
         const publicUrl = `${baseUrl}/${uniqueFileName}`;
         res.json({ presignedUrl, publicUrl });
@@ -78,46 +76,46 @@ chatRouter.post('/generate-download-url', userAuth, async (req, res) => {
     }
 });
 
-// --- EXISTING FETCH ROUTES ---
-chatRouter.get('/conversations/:userId', userAuth, async (req, res) => {
-    try {
-        const conversations = await Conversation.find({ participants: req.params.userId })
-            .populate('participants', 'name email profilePic role')
-            .populate('lastMessage')
-            .sort({ updatedAt: -1 });
-        res.status(200).json(conversations);
-    } catch (error) {
-        res.status(500).json({ error: "Failed to load conversations" });
-    }
-});
+// --- CORE CHAT ROUTES (UPDATED FOR GROUPS) ---
 
-chatRouter.get('/messages/:conversationId', userAuth, async (req, res) => {
-    try {
-        const messages = await Message.find({ conversationId: req.params.conversationId }).sort({ createdAt: 1 });
-        res.status(200).json(messages);
-    } catch (error) {
-        res.status(500).json({ error: "Failed to load messages" });
-    }
-});
-
+// Send Message (Handles both 1-on-1 and Group)
 chatRouter.post('/message', userAuth, async (req, res) => {
     try {
-        const { senderId, recipientId, text, mediaUrl, mediaType, fileSize, status } = req.body;
+        const { senderId, recipientId, text, mediaUrl, mediaType, fileSize, status, isGroup } = req.body;
 
-        let conversation = await Conversation.findOne({
-            isGroup: false,
-            participants: { $all: [senderId, recipientId] }
-        });
+        let conversationId = null;
+        let groupId = null;
 
-        if (!conversation) {
-            conversation = await Conversation.create({
-                participants: [senderId, recipientId],
-                isGroup: false
+        if (isGroup) {
+            // Group Routing
+            const group = await Group.findById(recipientId);
+            if (!group) return res.status(404).json({ error: "Group not found" });
+
+            groupId = group._id;
+
+            // Touch the group to bring it to the top of recent chats
+            group.updatedAt = new Date();
+            await group.save();
+        } else {
+            // 1-on-1 Routing
+            let conversation = await Conversation.findOne({
+                isGroup: false,
+                participants: { $all: [senderId, recipientId] }
             });
+
+            if (!conversation) {
+                conversation = await Conversation.create({
+                    participants: [senderId, recipientId],
+                    isGroup: false
+                });
+            }
+            conversationId = conversation._id;
         }
 
         const newMessage = await Message.create({
-            conversationId: conversation._id,
+            conversationId: conversationId,
+            groupId: groupId,
+            isGroup: isGroup || false,
             sender: senderId,
             text: text || "",
             mediaUrl: mediaUrl || "",
@@ -126,8 +124,9 @@ chatRouter.post('/message', userAuth, async (req, res) => {
             status: status || 'sent'
         });
 
-        conversation.lastMessage = newMessage._id;
-        await conversation.save();
+        if (conversationId) {
+            await Conversation.findByIdAndUpdate(conversationId, { lastMessage: newMessage._id });
+        }
 
         res.status(201).json(newMessage);
     } catch (error) {
@@ -135,6 +134,7 @@ chatRouter.post('/message', userAuth, async (req, res) => {
     }
 });
 
+// Fetch 1-on-1 History
 chatRouter.get('/history/:user1/:user2', userAuth, async (req, res) => {
     try {
         const { user1, user2 } = req.params;
@@ -148,7 +148,7 @@ chatRouter.get('/history/:user1/:user2', userAuth, async (req, res) => {
 
         const messages = await Message.find({
             conversationId: conversation._id,
-            deletedFor: { $ne: user1 }
+            deletedFor: { $ne: user1 } // Don't return messages this user deleted
         }).sort({ createdAt: 1 });
 
         res.status(200).json({ success: true, data: messages });
@@ -157,9 +157,33 @@ chatRouter.get('/history/:user1/:user2', userAuth, async (req, res) => {
     }
 });
 
-// --- NEW WHATSAPP-LIKE ROUTES ---
+// Fetch Group History
+chatRouter.get('/history/group/:groupId/:userId', userAuth, async (req, res) => {
+    try {
+        const { groupId, userId } = req.params;
 
-// 1. Edit Message
+        const group = await Group.findById(groupId);
+        if (!group) return res.status(200).json({ success: true, data: [] });
+
+        // Ensure requester is actually in the group
+        const isMember = group.members.some(m => String(m.user) === String(userId));
+        if (!isMember) return res.status(403).json({ success: false, error: "Not a group member" });
+
+        const messages = await Message.find({
+            groupId: groupId,
+            deletedFor: { $ne: userId }
+        })
+            .populate('sender', 'name profilePicture') // Needed for group chats to show names!
+            .sort({ createdAt: 1 });
+
+        res.status(200).json({ success: true, data: messages });
+    } catch (error) {
+        res.status(500).json({ success: false, error: "Failed to load group messages" });
+    }
+});
+
+// --- WHATSAPP-LIKE ACTIONS (UPDATED FOR GROUPS) ---
+
 chatRouter.put('/message/edit/:id', userAuth, async (req, res) => {
     try {
         const { text, userId } = req.body;
@@ -181,7 +205,7 @@ chatRouter.put('/message/edit/:id', userAuth, async (req, res) => {
     }
 });
 
-// 2. Delete for Everyone (Soft Delete with Safe Storage Cleanup)
+// Delete for Everyone (Smart Routing for Groups vs Peers)
 chatRouter.put('/message/delete-everyone', userAuth, async (req, res) => {
     try {
         const { messageIds, userId } = req.body;
@@ -190,45 +214,43 @@ chatRouter.put('/message/delete-everyone', userAuth, async (req, res) => {
 
         const validMessages = messages.filter(msg => {
             const timeDiff = Date.now() - new Date(msg.createdAt).getTime();
-            return timeDiff <= 1800000; // 30 minutes
+            return timeDiff <= 1800000; // 30 minutes limit
         });
 
-        if (validMessages.length === 0) {
-            return res.status(403).json({ success: false, error: "Time limit exceeded" });
-        }
+        if (validMessages.length === 0) return res.status(403).json({ success: false, error: "Time limit exceeded" });
 
         const updatedIds = [];
 
         for (const msg of validMessages) {
-            // Check if media is safe to delete from Cloudflare
             if (msg.mediaUrl) {
                 const count = await Message.countDocuments({ mediaUrl: msg.mediaUrl });
-                if (count <= 1) {
-                    await deleteMediaFromR2(msg.mediaUrl);
-                }
+                if (count <= 1) await deleteMediaFromR2(msg.mediaUrl);
             }
 
-            // Morph into a Tombstone
             msg.text = "";
             msg.mediaUrl = "";
             msg.isDeletedForEveryone = true;
             await msg.save();
 
-            // FIX: Explicitly convert ObjectId to string to prevent socket serialization bugs
             updatedIds.push(msg._id.toString());
         }
 
-        // FIX: Securely route the socket emission
+        // --- SMART SOCKET EMISSION (GROUP vs DIRECT) ---
         if (updatedIds.length > 0 && req.io) {
             try {
-                const conv = await Conversation.findById(validMessages[0].conversationId);
-                if (conv) {
-                    const recipientId = conv.participants.find(p => p.toString() !== userId.toString());
-                    if (recipientId) {
-                        console.log(`[CHAT] Firing delete-everyone to user ${recipientId.toString()} for IDs:`, updatedIds);
-                        req.io.to(recipientId.toString()).emit("messages_deleted_everyone", {
-                            messageIds: updatedIds
-                        });
+                const sampleMsg = validMessages[0];
+
+                if (sampleMsg.isGroup && sampleMsg.groupId) {
+                    // Broadcast to Group Room
+                    req.io.to(sampleMsg.groupId.toString()).emit("messages_deleted_everyone", { messageIds: updatedIds });
+                } else if (sampleMsg.conversationId) {
+                    // Broadcast to 1-on-1 Peer
+                    const conv = await Conversation.findById(sampleMsg.conversationId);
+                    if (conv) {
+                        const recipientId = conv.participants.find(p => p.toString() !== userId.toString());
+                        if (recipientId) {
+                            req.io.to(recipientId.toString()).emit("messages_deleted_everyone", { messageIds: updatedIds });
+                        }
                     }
                 }
             } catch (socketErr) {
@@ -242,28 +264,36 @@ chatRouter.put('/message/delete-everyone', userAuth, async (req, res) => {
     }
 });
 
-// 3. Delete for Me (Local Wipe with Auto-Hard Delete)
+// Delete for Me (Handles both Conversation & Group ghost cleanups)
 chatRouter.put('/message/delete-me', userAuth, async (req, res) => {
     try {
         const { messageIds, userId } = req.body;
 
-        // 1. Add user to the deletedFor array
         await Message.updateMany(
             { _id: { $in: messageIds } },
             { $addToSet: { deletedFor: userId } }
         );
 
-        // 2. Check for fully orphaned messages to Hard Delete
-        const updatedMessages = await Message.find({ _id: { $in: messageIds } }).populate('conversationId');
+        // Auto-Wipe ghost messages
+        const updatedMessages = await Message.find({ _id: { $in: messageIds } })
+            .populate('conversationId')
+            .populate('groupId');
 
         for (const msg of updatedMessages) {
-            if (msg.conversationId && msg.deletedFor.length === msg.conversationId.participants.length) {
-                // Both participants deleted it! It's a ghost.
+            let isOrphaned = false;
+
+            if (msg.isGroup && msg.groupId) {
+                // Orphaned if ALL group members deleted it
+                if (msg.deletedFor.length >= msg.groupId.members.length) isOrphaned = true;
+            } else if (msg.conversationId) {
+                // Orphaned if BOTH peers deleted it
+                if (msg.deletedFor.length === msg.conversationId.participants.length) isOrphaned = true;
+            }
+
+            if (isOrphaned) {
                 if (msg.mediaUrl) {
                     const count = await Message.countDocuments({ mediaUrl: msg.mediaUrl });
-                    if (count <= 1) {
-                        await deleteMediaFromR2(msg.mediaUrl);
-                    }
+                    if (count <= 1) await deleteMediaFromR2(msg.mediaUrl);
                 }
                 await Message.findByIdAndDelete(msg._id);
             }
@@ -275,7 +305,7 @@ chatRouter.put('/message/delete-me', userAuth, async (req, res) => {
     }
 });
 
-// 4. Clear Entire Chat (Batch Wipe)
+// Clear Entire 1-on-1 Chat
 chatRouter.put('/clear/:user1/:user2', userAuth, async (req, res) => {
     try {
         const { user1, user2 } = req.params;
@@ -287,16 +317,14 @@ chatRouter.put('/clear/:user1/:user2', userAuth, async (req, res) => {
 
         if (!conversation) return res.status(404).json({ success: false, error: "Conversation not found" });
 
-        // Add user to the deletedFor array of ALL messages
         await Message.updateMany(
             { conversationId: conversation._id },
             { $addToSet: { deletedFor: user1 } }
         );
 
-        // Sweep up messages that BOTH users have now cleared
+        // Sweep Ghost Messages
         const orphanedMessages = await Message.find({
             conversationId: conversation._id,
-            // Check if deletedFor array has both users (for 1-on-1 chats, length = 2)
             [`deletedFor.${conversation.participants.length - 1}`]: { $exists: true }
         });
 
@@ -314,5 +342,37 @@ chatRouter.put('/clear/:user1/:user2', userAuth, async (req, res) => {
     }
 });
 
+// Clear Entire Group Chat
+chatRouter.put('/clear/group/:groupId/:userId', userAuth, async (req, res) => {
+    try {
+        const { groupId, userId } = req.params;
+
+        const group = await Group.findById(groupId);
+        if (!group) return res.status(404).json({ success: false, error: "Group not found" });
+
+        await Message.updateMany(
+            { groupId: group._id },
+            { $addToSet: { deletedFor: userId } }
+        );
+
+        // Sweep Ghost Messages for Groups
+        const orphanedMessages = await Message.find({
+            groupId: group._id,
+            [`deletedFor.${group.members.length - 1}`]: { $exists: true }
+        });
+
+        for (const msg of orphanedMessages) {
+            if (msg.mediaUrl) {
+                const count = await Message.countDocuments({ mediaUrl: msg.mediaUrl });
+                if (count <= 1) await deleteMediaFromR2(msg.mediaUrl);
+            }
+            await Message.findByIdAndDelete(msg._id);
+        }
+
+        res.status(200).json({ success: true, message: "Group chat cleared" });
+    } catch (error) {
+        res.status(500).json({ success: false, error: "Failed to clear group chat" });
+    }
+});
 
 module.exports = chatRouter;

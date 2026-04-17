@@ -1,7 +1,8 @@
 const mongoose = require('mongoose');
 
 const MessageSchema = new mongoose.Schema({
-    conversationId: { type: mongoose.Schema.Types.ObjectId, ref: 'Conversation', required: true },
+    conversationId: { type: mongoose.Schema.Types.ObjectId, ref: 'Conversation', default: null },
+    
     sender: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     text: { type: String },
     mediaUrl: { type: String }, // Cloudflare R2 link
@@ -9,11 +10,14 @@ const MessageSchema = new mongoose.Schema({
     fileSize: { type: Number, default: 0 },
     status: { type: String, enum: ['sent', 'delivered', 'seen'], default: 'sent' },
     isRead: { type: Boolean, default: false },
+    
+    groupId: { type: mongoose.Schema.Types.ObjectId, ref: 'Group', default: null },
+    isGroup: { type: Boolean, default: false },
 
-    // --- NEW WHATSAPP-LIKE FEATURES ---
-    isDeletedForEveryone: { type: Boolean, default: false }, // Soft delete flag
-    deletedFor: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }], // Array of user IDs who deleted this for themselves
-    isEdited: { type: Boolean, default: false } // Edit flag
+    // --- WHATSAPP-LIKE FEATURES ---
+    isDeletedForEveryone: { type: Boolean, default: false }, 
+    deletedFor: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }], 
+    isEdited: { type: Boolean, default: false } 
 }, { timestamps: true });
 
 module.exports = mongoose.model('Message', MessageSchema);
