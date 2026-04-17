@@ -105,8 +105,20 @@ io.on('connection', (socket) => {
     // 1. Text & Media Message Router
     socket.on('send_message', (data) => {
         if (!data || !data.recipientId) return; // Safety check
+
+        const recipientStr = String(data.recipientId);
+
         // Emits directly to the recipient's personal room safely
-        socket.to(String(data.recipientId)).emit('receive_message', data);
+        socket.to(recipientStr).emit('receive_message', data);
+
+        // --- FIX: INSTANT SERVER-SIDE DELIVERY CONFIRMATION ---
+        // If the server explicitly knows the recipient is online, instantly notify the sender with a double tick
+        if (onlineUsers.has(recipientStr)) {
+            socket.emit('messages_status_update', {
+                viewerId: recipientStr,
+                status: 'delivered'
+            });
+        }
     });
 
     socket.on('message_delivered', (data) => {
@@ -196,6 +208,24 @@ io.on('connection', (socket) => {
     socket.on('video_upgrade_rejected', (data) => {
         if (!data || !data.to) return;
         socket.to(String(data.to)).emit('video_upgrade_rejected', { from: socket.id });
+    });
+
+    // Signal that the caller is seeing a "Busy" status
+    socket.on('notify_busy', (data) => {
+        if (!data || !data.to) return;
+        socket.to(String(data.to)).emit('peer_is_busy');
+    });
+
+    // Signal to put a specific user on hold
+    socket.on('hold_call', (data) => {
+        if (!data || !data.to) return;
+        socket.to(String(data.to)).emit('call_on_hold', { by: data.from });
+    });
+
+    // Signal to resume a held call
+    socket.on('resume_call', (data) => {
+        if (!data || !data.to) return;
+        socket.to(String(data.to)).emit('call_resumed');
     });
 
     // --- TIERED EMERGENCY SOS ROUTING ---
