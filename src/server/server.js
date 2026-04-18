@@ -5,6 +5,9 @@ require('dotenv').config();
 const http = require('http');
 const { Server } = require('socket.io');
 
+// --- NEW: FIREBASE ADMIN IMPORT ---
+const admin = require('../utils/firebaseAdmin');
+
 const connectDB = require('../database/config');
 const authRouter = require('../routes/authRouter');
 const employeeRouter = require('../routes/employeeRouter');
@@ -129,10 +132,40 @@ io.on('connection', (socket) => {
         });
     });
 
-    socket.on('call_user', (data) => {
+    // --- UPDATED: CALL USER WITH FIREBASE WAKE-UP PING ---
+    socket.on('call_user', async (data) => {
         if (!data || !data.userToCall) return;
         const { userToCall, signalData, from, callerName, profilePicture, callType } = data;
-        socket.to(String(userToCall)).emit('incoming_call', { signal: signalData, from, callerName, profilePicture, callType });
+
+        // 1. Emit via active Socket.io (Works if app is open)
+        socket.to(String(userToCall)).emit('incoming_call', {
+            signal: signalData, from, callerName, profilePicture, callType
+        });
+
+        // 2. Fire the Firebase Wake-Up Ping (Works if app is killed/backgrounded)
+        try {
+            const callee = await User.findById(userToCall);
+
+            if (callee && callee.fcmToken) {
+                const message = {
+                    token: callee.fcmToken,
+                    data: {
+                        type: 'incoming_call',
+                        callerName: String(callerName || 'Unknown'),
+                        callerId: String(from),
+                        callType: String(callType || 'voice')
+                    },
+                    android: {
+                        priority: 'high' // Bypasses Android battery saving
+                    }
+                };
+
+                await admin.messaging().send(message);
+                console.log(`🔥 Wake-up ping sent to ${callee.name}`);
+            }
+        } catch (error) {
+            console.error("Firebase Wake-Up Ping Error:", error);
+        }
     });
 
     socket.on('answer_call', (data) => {
