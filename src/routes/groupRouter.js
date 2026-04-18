@@ -1,12 +1,34 @@
 const express = require('express');
+const { DeleteObjectCommand } = require('@aws-sdk/client-s3'); // <-- ADDED
+const chatS3Client = require('../config/chatS3Client');       // <-- ADDED
+
 const Group = require('../models/Group');
 const User = require('../models/User');
-const Notification = require('../models/Notification'); // Needed for notifications
+const Notification = require('../models/Notification');
 
 const groupRouter = express.Router();
 
 const hasAdminRights = (group, userId) => {
     return String(group.creator) === String(userId) || group.admins.some(admin => String(admin) === String(userId));
+};
+
+// --- HELPER: SAFE R2 MEDIA DELETION ---
+const deleteMediaFromR2 = async (mediaUrl) => {
+    if (!mediaUrl) return;
+    try {
+        const urlParts = new URL(mediaUrl);
+        const key = urlParts.pathname.startsWith('/') ? urlParts.pathname.substring(1) : urlParts.pathname;
+
+        const command = new DeleteObjectCommand({
+            Bucket: process.env.CHAT_MEDIA_BUCKET.replace(/['"]/g, ''),
+            Key: key,
+        });
+
+        await chatS3Client.send(command);
+        console.log(`[Storage Cleanup] Deleted old group icon from R2: ${key}`);
+    } catch (error) {
+        console.error("Failed to delete group icon from R2:", error);
+    }
 };
 
 // 1. Create a New Group
@@ -34,15 +56,11 @@ groupRouter.post('/create', async (req, res) => {
 
         const creator = await User.findById(creatorId);
 
-        // --- REAL-TIME NOTIFICATIONS & SOCKET EMITS ---
         if (req.io) {
             const notificationsToSave = [];
             for (const memberId of uniqueMembers) {
                 if (String(memberId) !== String(creatorId)) {
-                    // 1. Emit to socket so their UI updates instantly
                     req.io.to(String(memberId)).emit('added_to_group', populatedGroup);
-
-                    // 2. Prepare DB Notification
                     notificationsToSave.push({
                         recipient: memberId,
                         title: 'New Group',
@@ -54,7 +72,6 @@ groupRouter.post('/create', async (req, res) => {
             }
             if (notificationsToSave.length > 0) {
                 await Notification.insertMany(notificationsToSave);
-                // Trigger navbar bell update
                 req.io.emit('new_notification');
             }
         }
@@ -93,11 +110,8 @@ groupRouter.put('/add-members', async (req, res) => {
 
         const adder = await User.findById(requesterId);
 
-        // --- REAL-TIME NOTIFICATIONS & SOCKET EMITS ---
         if (req.io) {
             const notificationsToSave = [];
-
-            // Notify newly added members
             for (const member of membersToAdd) {
                 const memberIdStr = String(member.user);
                 req.io.to(memberIdStr).emit('added_to_group', updatedGroup);
@@ -114,8 +128,6 @@ groupRouter.put('/add-members', async (req, res) => {
                 await Notification.insertMany(notificationsToSave);
                 req.io.emit('new_notification');
             }
-
-            // Notify existing members that group updated
             req.io.to(String(groupId)).emit('group_updated', updatedGroup);
         }
 
@@ -146,7 +158,6 @@ groupRouter.put('/remove-member', async (req, res) => {
 
         if (req.io) {
             req.io.to(String(groupId)).emit('group_updated', updatedGroup);
-            // Tell the removed person they were kicked so their UI clears
             req.io.to(String(targetUserId)).emit('group_updated', updatedGroup);
         }
 
@@ -185,7 +196,7 @@ groupRouter.put('/leave', async (req, res) => {
 
         if (req.io) {
             req.io.to(String(groupId)).emit('group_updated', updatedGroup);
-            req.io.to(String(userId)).emit('group_updated', updatedGroup); // Clear for leaver
+            req.io.to(String(userId)).emit('group_updated', updatedGroup);
         }
 
         res.status(200).json({ success: true, data: updatedGroup });
@@ -230,6 +241,61 @@ groupRouter.put('/demote', async (req, res) => {
 
         res.status(200).json({ success: true, data: updatedGroup });
     } catch (error) { res.status(500).json({ success: false, message: "Failed to demote" }); }
+});
+
+// 7. Update Group Details (Name or Profile Picture)
+groupRouter.put('/update', async (req, res) => {
+    try {
+        const { groupId, requesterId, name, groupIcon } = req.body;
+
+        if (!groupId || !requesterId) {
+            return res.status(400).json({ success: false, message: "Missing required fields" });
+        }
+
+        const group = await Group.findById(groupId);
+        if (!group) return res.status(404).json({ success: false, message: "Group not found" });
+
+        if (!hasAdminRights(group, requesterId)) {
+            return res.status(403).json({ success: false, message: "Only admins can update group details" });
+        }
+
+        let isUpdated = false;
+
+        if (name && name.trim() !== "") {
+            group.name = name.trim();
+            isUpdated = true;
+        }
+
+        // --- CLOUDFLARE R2 CLEANUP LOGIC ---
+        if (groupIcon !== undefined) {
+            // If the group currently has an icon, AND the new icon is different (or empty), delete the old one
+            if (group.groupIcon && group.groupIcon !== groupIcon) {
+                await deleteMediaFromR2(group.groupIcon);
+            }
+
+            group.groupIcon = groupIcon;
+            isUpdated = true;
+        }
+
+        if (isUpdated) {
+            await group.save();
+        }
+
+        const updatedGroup = await Group.findById(groupId)
+            .populate('creator', 'name email profilePicture role')
+            .populate('admins', 'name email profilePicture role')
+            .populate('members.user', 'name email profilePicture role');
+
+        if (req.io) {
+            req.io.to(String(groupId)).emit('group_updated', updatedGroup);
+        }
+
+        res.status(200).json({ success: true, data: updatedGroup });
+
+    } catch (error) {
+        console.error("Failed to update group details:", error);
+        res.status(500).json({ success: false, message: "Failed to update group details" });
+    }
 });
 
 // 8. Fetch My Groups (For Initial Load)
