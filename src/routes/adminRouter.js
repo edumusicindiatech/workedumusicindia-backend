@@ -26,6 +26,7 @@ const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const assetsS3Client = require('../config/assetsS3Client');
 const s3Client = require('../config/s3');
 const { getISTDayOfWeek, getISTDateString } = require('../utils/timeHelper');
+const Conversation = require('../models/Conversation');
 
 // ==========================================
 // 1. CREATE ADMIN (SuperAdmin Only)
@@ -2210,16 +2211,40 @@ adminRouter.put('/profile/password', userAuth, adminAuth, async (req, res) => {
 // ==========================================
 adminRouter.get('/chat-contacts', userAuth, adminAuth, async (req, res) => {
     try {
-        // Fetch all roles except the currently logged-in user
+        const currentUserId = req.user._id;
+
+        // 1. Fetch all relevant roles using .lean()
         const peers = await User.find({
             role: { $in: ['Employee', 'Admin', 'SuperAdmin'] },
-            _id: { $ne: req.user._id }
+            _id: { $ne: currentUserId }
         })
-            .select('_id name email role profilePicture designation zone');
+            .select('_id name email role profilePicture designation zone')
+            .lean();
+
+        // 2. Fetch all 1-on-1 conversations for the current user
+        const myConversations = await Conversation.find({
+            isGroup: false,
+            participants: currentUserId
+        }).lean();
+
+        // 3. Create a map of { peerId: lastMessageTime }
+        const conversationMap = {};
+        myConversations.forEach(conv => {
+            const otherParticipantId = conv.participants.find(p => String(p) !== String(currentUserId));
+            if (otherParticipantId) {
+                conversationMap[String(otherParticipantId)] = conv.updatedAt || conv.createdAt;
+            }
+        });
+
+        // 4. Attach the timestamp to the peer data
+        const peersWithTimestamps = peers.map(peer => ({
+            ...peer,
+            lastMessageAt: conversationMap[String(peer._id)] || null 
+        }));
 
         res.status(200).json({
             success: true,
-            data: peers
+            data: peersWithTimestamps
         });
     } catch (error) {
         console.error("Error fetching chat contacts:", error);

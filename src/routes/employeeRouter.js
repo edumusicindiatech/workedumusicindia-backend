@@ -35,6 +35,7 @@ const LeaveRequest = require('../models/LeaveRequest');
 const path = require('path');
 const assetsS3Client = require('../config/assetsS3Client');
 const { getISTDateString, getISTDayOfWeek } = require('../utils/timeHelper');
+const Conversation = require('../models/Conversation');
 
 const employeeRouter = express.Router();
 
@@ -1748,13 +1749,39 @@ employeeRouter.delete('/tasks/:taskId', userAuth, async (req, res) => {
 // ============================================================================
 employeeRouter.get('/peers', userAuth, async (req, res) => {
     try {
-        // Explicitly fetch all users, excluding passwords, but INCLUDING profilePicture
-        const peers = await User.find({ _id: { $ne: req.user._id } })
-            .select('_id name email role profilePicture designation zone');
+        const currentUserId = req.user._id;
+
+        // 1. Fetch all peers using .lean() so we can modify the returned objects
+        const peers = await User.find({ _id: { $ne: currentUserId } })
+            .select('_id name email role profilePicture designation zone')
+            .lean();
+
+        // 2. Fetch all 1-on-1 conversations for the current user
+        const myConversations = await Conversation.find({
+            isGroup: false,
+            participants: currentUserId
+        }).lean();
+
+        // 3. Create a map of { peerId: lastMessageTime } for blazing fast lookup
+        const conversationMap = {};
+        myConversations.forEach(conv => {
+            // Find the ID of the *other* person in the conversation
+            const otherParticipantId = conv.participants.find(p => String(p) !== String(currentUserId));
+            if (otherParticipantId) {
+                // Attach the timestamp (using updatedAt or createdAt of the conversation)
+                conversationMap[String(otherParticipantId)] = conv.updatedAt || conv.createdAt;
+            }
+        });
+
+        // 4. Attach the timestamp to the peer data
+        const peersWithTimestamps = peers.map(peer => ({
+            ...peer,
+            lastMessageAt: conversationMap[String(peer._id)] || null // null means no messages yet
+        }));
 
         res.status(200).json({
             success: true,
-            data: peers
+            data: peersWithTimestamps
         });
     } catch (error) {
         console.error("Error fetching peers for chat:", error);
