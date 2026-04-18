@@ -5,7 +5,7 @@ require('dotenv').config();
 const http = require('http');
 const { Server } = require('socket.io');
 
-// --- NEW: FIREBASE ADMIN IMPORT ---
+// --- FIREBASE ADMIN IMPORT ---
 const admin = require('../utils/firebaseAdmin');
 
 const connectDB = require('../database/config');
@@ -37,10 +37,10 @@ const server = http.createServer(app);
 
 // --- CONSOLIDATED ALLOWED ORIGINS ---
 const allowedOrigins = [
-    'http://localhost:5173',           // Local Web Dev
-    'http://localhost',                // Android APK (Capacitor)
-    'capacitor://localhost',          // iOS App (Capacitor)
-    process.env.FRONTEND_URL,          // Vercel/Cloudflare URL
+    'http://localhost:5173',
+    'http://localhost',
+    'capacitor://localhost',
+    process.env.FRONTEND_URL,
     'https://www.workedumusicindia.com',
     'https://workedumusicindia.com'
 ];
@@ -132,39 +132,45 @@ io.on('connection', (socket) => {
         });
     });
 
-    // --- UPDATED: CALL USER WITH FIREBASE WAKE-UP PING ---
+    // --- UPDATED: IMMERSIVE VOIP CALL HANDLER ---
     socket.on('call_user', async (data) => {
         if (!data || !data.userToCall) return;
         const { userToCall, signalData, from, callerName, profilePicture, callType } = data;
 
-        // 1. Emit via active Socket.io (Works if app is open)
+        // 1. Normal Socket Emit (For Foreground/Website)
         socket.to(String(userToCall)).emit('incoming_call', {
             signal: signalData, from, callerName, profilePicture, callType
         });
 
-        // 2. Fire the Firebase Wake-Up Ping (Works if app is killed/backgrounded)
+        // 2. FCM High-Priority Data Message (For Background/Killed App)
         try {
             const callee = await User.findById(userToCall);
 
             if (callee && callee.fcmToken) {
                 const message = {
                     token: callee.fcmToken,
+                    // Note: Use "data" only. "notification" would show a system tray, 
+                    // we want to wake the app logic instead.
                     data: {
                         type: 'incoming_call',
                         callerName: String(callerName || 'Unknown'),
                         callerId: String(from),
-                        callType: String(callType || 'voice')
+                        callType: String(callType || 'voice'),
+                        profilePicture: String(profilePicture || ''),
+                        // Stringify the signal so it can travel through FCM
+                        signal: JSON.stringify(signalData)
                     },
                     android: {
-                        priority: 'high' // Bypasses Android battery saving
+                        priority: 'high', // Wake up the device
+                        ttl: 0 // Deliver immediately or expire
                     }
                 };
 
                 await admin.messaging().send(message);
-                console.log(`🔥 Wake-up ping sent to ${callee.name}`);
+                console.log(`🔥 Full-Screen VoIP Wake-up sent to ${callee.name}`);
             }
         } catch (error) {
-            console.error("Firebase Wake-Up Ping Error:", error);
+            console.error("Firebase Wake-Up Error:", error);
         }
     });
 
@@ -333,10 +339,8 @@ app.get('/health', (req, res) => {
 
 app.use(cookieParser());
 
-// --- UPDATED EXPRESS CORS ---
 app.use(cors({
     origin: function (origin, callback) {
-        // Allow requests with no origin (like mobile apps)
         if (!origin) return callback(null, true);
         if (allowedOrigins.indexOf(origin) === -1) {
             return callback(new Error('CORS block: Origin not allowed'), false);
