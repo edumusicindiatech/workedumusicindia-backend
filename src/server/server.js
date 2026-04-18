@@ -32,14 +32,19 @@ const groupRouter = require('../routes/groupRouter');
 const app = express();
 const server = http.createServer(app);
 
+// --- CONSOLIDATED ALLOWED ORIGINS ---
+const allowedOrigins = [
+    'http://localhost:5173',           // Local Web Dev
+    'http://localhost',                // Android APK (Capacitor)
+    'capacitor://localhost',          // iOS App (Capacitor)
+    process.env.FRONTEND_URL,          // Vercel/Cloudflare URL
+    'https://www.workedumusicindia.com',
+    'https://workedumusicindia.com'
+];
+
 const io = new Server(server, {
     cors: {
-        origin: [
-            'http://localhost:5173',
-            process.env.FRONTEND_URL,
-            'https://www.workedumusicindia.com',
-            'https://workedumusicindia.com'
-        ],
+        origin: allowedOrigins,
         credentials: true,
         methods: ["GET", "POST", "PUT", "DELETE"]
     }
@@ -95,15 +100,11 @@ io.on('connection', (socket) => {
         }
     });
 
-    // CONSOLIDATED BROADCAST LOGIC
     socket.on('send_message', (data) => {
         if (!data || !data.recipientId) return;
         const recipientStr = String(data.recipientId);
-
-        // Broadcast to specific room (UserID or GroupID)
         socket.to(recipientStr).emit('receive_message', data);
 
-        // Delivery feedback for 1-on-1 only
         if (!data.isGroup && onlineUsers.has(recipientStr)) {
             socket.emit('messages_status_update', {
                 viewerId: recipientStr,
@@ -298,15 +299,20 @@ app.get('/health', (req, res) => {
 });
 
 app.use(cookieParser());
+
+// --- UPDATED EXPRESS CORS ---
 app.use(cors({
-    origin: [
-        'http://localhost:5173',
-        process.env.FRONTEND_URL,
-        'https://www.workedumusicindia.com',
-        'https://workedumusicindia.com'
-    ],
+    origin: function (origin, callback) {
+        // Allow requests with no origin (like mobile apps)
+        if (!origin) return callback(null, true);
+        if (allowedOrigins.indexOf(origin) === -1) {
+            return callback(new Error('CORS block: Origin not allowed'), false);
+        }
+        return callback(null, true);
+    },
     credentials: true
 }));
+
 app.use(express.json({ limit: '30mb' }));
 app.use(express.urlencoded({ limit: '30mb', extended: true }));
 
