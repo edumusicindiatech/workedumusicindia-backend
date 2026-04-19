@@ -378,12 +378,12 @@ app.use('/api/app', appRouter);
 
 const PORT = process.env.PORT || 5000;
 
-// --- AUTO-DEPLOY OTA SCRIPT ---
+// --- AUTO-DEPLOY OTA SCRIPT (SPACE-SAVER EDITION) ---
 async function autoDeployOtaUpdate() {
     try {
         // Locate update.zip relative to the working directory
-        const zipPath = path.join(process.cwd(), 'public', 'update.zip');
-
+        const zipPath = path.join(process.cwd(), 'public', 'update.zip'); 
+        
         if (!fs.existsSync(zipPath)) {
             console.log('🤖 Auto-Updater: No update.zip found in public folder. Skipping.');
             return;
@@ -396,9 +396,9 @@ async function autoDeployOtaUpdate() {
         const currentFileHash = hashSum.digest('hex');
 
         // Get the most recent OTA release from MongoDB
-        const latestRelease = await AppRelease.findOne({
-            target_platform: 'android',
-            update_type: 'OTA'
+        const latestRelease = await AppRelease.findOne({ 
+            target_platform: 'android', 
+            update_type: 'OTA' 
         }).sort({ created_at: -1 });
 
         // Compare the hashes. If they match, the file hasn't changed.
@@ -407,7 +407,7 @@ async function autoDeployOtaUpdate() {
             return;
         }
 
-        console.log('🤖 Auto-Updater: New update.zip detected! Generating new release...');
+        console.log('🤖 Auto-Updater: New update.zip detected! Overwriting previous release...');
 
         // Auto-calculate the next version number
         let newVersion = "1.0.1";
@@ -418,23 +418,41 @@ async function autoDeployOtaUpdate() {
             const nextPatch = parseInt(versionParts[2] || 0) + 1;
             newVersion = `${versionParts[0]}.${versionParts[1]}.${nextPatch}`;
             nativeRequired = latestRelease.native_version_required || "1.0";
+            
+            // 🛑 THE SPACE-SAVER LOGIC: Overwrite the existing document
+            latestRelease.release_version = newVersion;
+            latestRelease.file_hash = currentFileHash;
+            latestRelease.release_notes = `Auto-deployed OTA patch v${newVersion}`;
+            latestRelease.status = 'active';
+            latestRelease.created_at = new Date(); // Refresh the timestamp
+            
+            await latestRelease.save();
+            
+            // 🧹 CLEANUP: Delete any other lingering OTA documents just to be perfectly clean
+            await AppRelease.deleteMany({ 
+                target_platform: 'android', 
+                update_type: 'OTA',
+                _id: { $ne: latestRelease._id } 
+            });
+
+            console.log(`🚀 Auto-Updater: Successfully OVERWRITTEN and deployed OTA Version ${newVersion}!`);
+        } else {
+            // IF THE DATABASE IS COMPLETELY EMPTY: Create the very first one
+            const newRelease = new AppRelease({
+                release_version: newVersion,
+                target_platform: 'android',
+                native_version_required: nativeRequired,
+                download_url: 'https://workedumusicindia-backend-1.onrender.com/update.zip',
+                update_type: 'OTA',
+                is_mandatory: true,
+                status: 'active',
+                file_hash: currentFileHash, 
+                release_notes: `Auto-deployed OTA patch v${newVersion}`
+            });
+
+            await newRelease.save();
+            console.log(`🚀 Auto-Updater: Successfully deployed FIRST OTA Version ${newVersion}!`);
         }
-
-        // Automatically insert the new document into MongoDB
-        const newRelease = new AppRelease({
-            release_version: newVersion,
-            target_platform: 'android',
-            native_version_required: nativeRequired,
-            download_url: 'https://workedumusicindia-backend-1.onrender.com/update.zip',
-            update_type: 'OTA',
-            is_mandatory: true,
-            status: 'active',
-            file_hash: currentFileHash,
-            release_notes: `Auto-deployed OTA patch v${newVersion}`
-        });
-
-        await newRelease.save();
-        console.log(`🚀 Auto-Updater: Successfully deployed OTA Version ${newVersion} to all users!`);
 
     } catch (error) {
         console.error("❌ Auto-Updater Failed:", error);
