@@ -382,7 +382,7 @@ const PORT = process.env.PORT || 5000;
 async function autoDeployOtaUpdate() {
     try {
         // Locate update.zip relative to the working directory
-        const zipPath = path.join(process.cwd(), 'public', 'update.zip'); 
+        const zipPath = path.join(process.cwd(), 'public', 'update_v2.zip'); 
         
         if (!fs.existsSync(zipPath)) {
             console.log('🤖 Auto-Updater: No update.zip found in public folder. Skipping.');
@@ -442,7 +442,7 @@ async function autoDeployOtaUpdate() {
                 release_version: newVersion,
                 target_platform: 'android',
                 native_version_required: nativeRequired,
-                download_url: 'https://workedumusicindia-backend-1.onrender.com/update.zip',
+                download_url: 'https://workedumusicindia-backend-1.onrender.com/update_v2.zip',
                 update_type: 'OTA',
                 is_mandatory: true,
                 status: 'active',
