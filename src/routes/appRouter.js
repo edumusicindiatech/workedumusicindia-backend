@@ -30,6 +30,7 @@ appRouter.get('/check-update', async (req, res) => {
                 action: 'APK',
                 is_mandatory: true, // Always force APK updates to prevent crashes
                 download_url: latestRelease.download_url,
+                release_version: latestRelease.release_version,
                 release_notes: latestRelease.release_notes || 'A major app update is required.'
             });
         }
@@ -41,6 +42,7 @@ appRouter.get('/check-update', async (req, res) => {
                 action: latestRelease.update_type, // 'OTA' or 'APK' based on your DB control
                 is_mandatory: latestRelease.is_mandatory,
                 download_url: latestRelease.download_url,
+                release_version: latestRelease.release_version,
                 release_notes: latestRelease.release_notes
             });
         }
