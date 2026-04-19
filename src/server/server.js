@@ -31,6 +31,7 @@ const { sendSOSEmergencyEmail } = require('../utils/emailService');
 const chatRouter = require('../routes/chatRouter');
 const autoChatMediaCleanup = require('../jobs/autoChatMediaCleanup');
 const groupRouter = require('../routes/groupRouter');
+const appRouter = require('../routes/appRouter');
 
 const app = express();
 const server = http.createServer(app);
@@ -364,6 +365,7 @@ app.use('/api/admin/progress', progressRouter);
 app.use('/api/learning', LearningRouter);
 app.use('/api/chat', chatRouter);
 app.use('/api/group', groupRouter);
+app.use('/api/app', appRouter);
 
 const PORT = process.env.PORT || 5000;
 
