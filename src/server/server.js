@@ -5,6 +5,12 @@ require('dotenv').config();
 const http = require('http');
 const { Server } = require('socket.io');
 
+// --- NEW IMPORTS FOR AUTO-UPDATER ---
+const fs = require('fs');
+const crypto = require('crypto');
+const path = require('path');
+const AppRelease = require('../models/AppRelease'); // Ensure path is correct for your folder structure
+
 // --- FIREBASE ADMIN IMPORT ---
 const admin = require('../utils/firebaseAdmin');
 
@@ -354,6 +360,8 @@ app.use(cors({
 
 app.use(express.json({ limit: '30mb' }));
 app.use(express.urlencoded({ limit: '30mb', extended: true }));
+
+// --- SERVING THE PUBLIC FOLDER FOR THE ZIP ---
 app.use(express.static('public'));
 
 app.use('/api/auth', authRouter);
@@ -370,9 +378,76 @@ app.use('/api/app', appRouter);
 
 const PORT = process.env.PORT || 5000;
 
+// --- AUTO-DEPLOY OTA SCRIPT ---
+async function autoDeployOtaUpdate() {
+    try {
+        // Locate update.zip relative to the working directory
+        const zipPath = path.join(process.cwd(), 'public', 'update.zip');
+
+        if (!fs.existsSync(zipPath)) {
+            console.log('🤖 Auto-Updater: No update.zip found in public folder. Skipping.');
+            return;
+        }
+
+        // Read the file and generate a unique SHA-256 Hash
+        const fileBuffer = fs.readFileSync(zipPath);
+        const hashSum = crypto.createHash('sha256');
+        hashSum.update(fileBuffer);
+        const currentFileHash = hashSum.digest('hex');
+
+        // Get the most recent OTA release from MongoDB
+        const latestRelease = await AppRelease.findOne({
+            target_platform: 'android',
+            update_type: 'OTA'
+        }).sort({ created_at: -1 });
+
+        // Compare the hashes. If they match, the file hasn't changed.
+        if (latestRelease && latestRelease.file_hash === currentFileHash) {
+            console.log(`🤖 Auto-Updater: update.zip is unchanged (v${latestRelease.release_version}). No database update needed.`);
+            return;
+        }
+
+        console.log('🤖 Auto-Updater: New update.zip detected! Generating new release...');
+
+        // Auto-calculate the next version number
+        let newVersion = "1.0.1";
+        let nativeRequired = "1.0"; // Default baseline
+
+        if (latestRelease) {
+            const versionParts = latestRelease.release_version.split('.');
+            const nextPatch = parseInt(versionParts[2] || 0) + 1;
+            newVersion = `${versionParts[0]}.${versionParts[1]}.${nextPatch}`;
+            nativeRequired = latestRelease.native_version_required || "1.0";
+        }
+
+        // Automatically insert the new document into MongoDB
+        const newRelease = new AppRelease({
+            release_version: newVersion,
+            target_platform: 'android',
+            native_version_required: nativeRequired,
+            download_url: 'https://workedumusicindia-backend-1.onrender.com/update.zip',
+            update_type: 'OTA',
+            is_mandatory: true,
+            status: 'active',
+            file_hash: currentFileHash,
+            release_notes: `Auto-deployed OTA patch v${newVersion}`
+        });
+
+        await newRelease.save();
+        console.log(`🚀 Auto-Updater: Successfully deployed OTA Version ${newVersion} to all users!`);
+
+    } catch (error) {
+        console.error("❌ Auto-Updater Failed:", error);
+    }
+}
+
 connectDB().then(() => {
     server.listen(PORT, '0.0.0.0', () => {
         console.log(`Server is successfully running on port ${PORT}`);
+
+        // --- TRIGGER AUTO UPDATER ---
+        autoDeployOtaUpdate();
+
         startShiftWarningCron(io);
         startDailyReportsCron(io);
         startKeepAliveCron();

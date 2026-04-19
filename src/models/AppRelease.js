@@ -51,6 +51,10 @@ const appReleaseSchema = new mongoose.Schema({
         type: String
     },
 
+    file_hash: {
+        type: String
+    },
+
     created_at: {
         type: Date,
         default: Date.now
