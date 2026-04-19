@@ -40,6 +40,7 @@ const allowedOrigins = [
     'http://localhost:5173',
     'http://localhost',
     'capacitor://localhost',
+    'https://experimental-voip-calls.workedumusicindia-frontend.pages.dev',
     process.env.FRONTEND_URL,
     'https://www.workedumusicindia.com',
     'https://workedumusicindia.com'
