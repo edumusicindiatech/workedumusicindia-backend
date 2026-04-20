@@ -157,20 +157,18 @@ io.on('connection', (socket) => {
             if (callee && callee.fcmToken) {
                 const message = {
                     token: callee.fcmToken,
-                    // Note: Use "data" only. "notification" would show a system tray, 
-                    // we want to wake the app logic instead.
+                    // Pure Data payload (NO "notification" object!)
                     data: {
                         type: 'incoming_call',
                         callerName: String(callerName || 'Unknown'),
                         callerId: String(from),
                         callType: String(callType || 'voice'),
                         profilePicture: String(profilePicture || ''),
-                        // Stringify the signal so it can travel through FCM
                         signal: JSON.stringify(signalData)
                     },
                     android: {
                         priority: 'high', // Wake up the device
-                        ttl: 0 // Deliver immediately or expire
+                        ttl: 0 // Deliver immediately or drop it (Required for Doze bypass)
                     }
                 };
 
@@ -382,8 +380,8 @@ const PORT = process.env.PORT || 5000;
 async function autoDeployOtaUpdate() {
     try {
         // Locate update.zip relative to the working directory
-        const zipPath = path.join(process.cwd(), 'public', 'update.zip'); 
-        
+        const zipPath = path.join(process.cwd(), 'public', 'update.zip');
+
         if (!fs.existsSync(zipPath)) {
             console.log('🤖 Auto-Updater: No update.zip found in public folder. Skipping.');
             return;
@@ -396,9 +394,9 @@ async function autoDeployOtaUpdate() {
         const currentFileHash = hashSum.digest('hex');
 
         // Get the most recent OTA release from MongoDB
-        const latestRelease = await AppRelease.findOne({ 
-            target_platform: 'android', 
-            update_type: 'OTA' 
+        const latestRelease = await AppRelease.findOne({
+            target_platform: 'android',
+            update_type: 'OTA'
         }).sort({ created_at: -1 });
 
         // Compare the hashes. If they match, the file hasn't changed.
@@ -418,21 +416,21 @@ async function autoDeployOtaUpdate() {
             const nextPatch = parseInt(versionParts[2] || 0) + 1;
             newVersion = `${versionParts[0]}.${versionParts[1]}.${nextPatch}`;
             nativeRequired = latestRelease.native_version_required || "1.0";
-            
+
             // 🛑 THE SPACE-SAVER LOGIC: Overwrite the existing document
             latestRelease.release_version = newVersion;
             latestRelease.file_hash = currentFileHash;
             latestRelease.release_notes = `Auto-deployed OTA patch v${newVersion}`;
             latestRelease.status = 'active';
             latestRelease.created_at = new Date(); // Refresh the timestamp
-            
+
             await latestRelease.save();
-            
+
             // 🧹 CLEANUP: Delete any other lingering OTA documents just to be perfectly clean
-            await AppRelease.deleteMany({ 
-                target_platform: 'android', 
+            await AppRelease.deleteMany({
+                target_platform: 'android',
                 update_type: 'OTA',
-                _id: { $ne: latestRelease._id } 
+                _id: { $ne: latestRelease._id }
             });
 
             console.log(`🚀 Auto-Updater: Successfully OVERWRITTEN and deployed OTA Version ${newVersion}!`);
@@ -446,7 +444,7 @@ async function autoDeployOtaUpdate() {
                 update_type: 'OTA',
                 is_mandatory: true,
                 status: 'active',
-                file_hash: currentFileHash, 
+                file_hash: currentFileHash,
                 release_notes: `Auto-deployed OTA patch v${newVersion}`
             });
 
