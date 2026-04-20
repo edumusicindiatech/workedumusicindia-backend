@@ -9,7 +9,7 @@ const { Server } = require('socket.io');
 const fs = require('fs');
 const crypto = require('crypto');
 const path = require('path');
-const AppRelease = require('../models/AppRelease'); // Ensure path is correct for your folder structure
+const AppRelease = require('../models/AppRelease'); 
 
 // --- FIREBASE ADMIN IMPORT ---
 const admin = require('../utils/firebaseAdmin');
@@ -60,6 +60,15 @@ const io = new Server(server, {
         methods: ["GET", "POST", "PUT", "DELETE"]
     }
 });
+
+// 🚀 HELPER: Shrink WebRTC signal to bypass FCM 4KB limit (Video Fix)
+const shrinkSignalForFcm = (signal) => {
+    if (!signal || !signal.sdp) return JSON.stringify(signal);
+    // Stripping ICE candidates saves massive space; the app will re-fetch them via Socket once awake
+    const lines = signal.sdp.split('\n');
+    const minimalSdp = lines.filter(line => !line.startsWith('a=candidate')).join('\n');
+    return JSON.stringify({ ...signal, sdp: minimalSdp });
+};
 
 const activeLocations = new Map();
 const onlineUsers = new Map();
@@ -136,16 +145,16 @@ io.on('connection', (socket) => {
         if (!data || !data.senderId) return;
         socket.to(String(data.senderId)).emit('messages_status_update', {
             viewerId: data.recipientId,
-            status: 'seen'
+            status: 'delivered'
         });
     });
 
-    // --- UPDATED: IMMERSIVE VOIP CALL HANDLER ---
+    // --- UPDATED: IMMERSIVE VOIP CALL HANDLER (With Video Space Fix) ---
     socket.on('call_user', async (data) => {
         if (!data || !data.userToCall) return;
         const { userToCall, signalData, from, callerName, profilePicture, callType } = data;
 
-        // 1. Normal Socket Emit (For Foreground/Website)
+        // 1. Normal Socket Emit (For Foreground/Website - Always Full Signal)
         socket.to(String(userToCall)).emit('incoming_call', {
             signal: signalData, from, callerName, profilePicture, callType
         });
@@ -157,23 +166,23 @@ io.on('connection', (socket) => {
             if (callee && callee.fcmToken) {
                 const message = {
                     token: callee.fcmToken,
-                    // Pure Data payload (NO "notification" object!)
                     data: {
                         type: 'incoming_call',
                         callerName: String(callerName || 'Unknown'),
                         callerId: String(from),
                         callType: String(callType || 'voice'),
                         profilePicture: String(profilePicture || ''),
-                        signal: JSON.stringify(signalData)
+                        // 🚀 Apply the fix here to ensure the packet is small enough for Video
+                        signal: shrinkSignalForFcm(signalData)
                     },
                     android: {
-                        priority: 'high', // Wake up the device
-                        ttl: 0 // Deliver immediately or drop it (Required for Doze bypass)
+                        priority: 'high',
+                        ttl: 0 
                     }
                 };
 
                 await admin.messaging().send(message);
-                console.log(`🔥 Full-Screen VoIP Wake-up sent to ${callee.name}`);
+                console.log(`🔥 Full-Screen VoIP Wake-up sent to ${callee.name} (${callType})`);
             }
         } catch (error) {
             console.error("Firebase Wake-Up Error:", error);
@@ -379,7 +388,6 @@ const PORT = process.env.PORT || 5000;
 // --- AUTO-DEPLOY OTA SCRIPT (SPACE-SAVER EDITION) ---
 async function autoDeployOtaUpdate() {
     try {
-        // Locate update.zip relative to the working directory
         const zipPath = path.join(process.cwd(), 'public', 'update.zip');
 
         if (!fs.existsSync(zipPath)) {
@@ -387,19 +395,16 @@ async function autoDeployOtaUpdate() {
             return;
         }
 
-        // Read the file and generate a unique SHA-256 Hash
         const fileBuffer = fs.readFileSync(zipPath);
         const hashSum = crypto.createHash('sha256');
         hashSum.update(fileBuffer);
         const currentFileHash = hashSum.digest('hex');
 
-        // Get the most recent OTA release from MongoDB
         const latestRelease = await AppRelease.findOne({
             target_platform: 'android',
             update_type: 'OTA'
         }).sort({ created_at: -1 });
 
-        // Compare the hashes. If they match, the file hasn't changed.
         if (latestRelease && latestRelease.file_hash === currentFileHash) {
             console.log(`🤖 Auto-Updater: update.zip is unchanged (v${latestRelease.release_version}). No database update needed.`);
             return;
@@ -407,9 +412,8 @@ async function autoDeployOtaUpdate() {
 
         console.log('🤖 Auto-Updater: New update.zip detected! Overwriting previous release...');
 
-        // Auto-calculate the next version number
         let newVersion = "1.0.1";
-        let nativeRequired = "1.0"; // Default baseline
+        let nativeRequired = "1.0"; 
 
         if (latestRelease) {
             const versionParts = latestRelease.release_version.split('.');
@@ -417,16 +421,14 @@ async function autoDeployOtaUpdate() {
             newVersion = `${versionParts[0]}.${versionParts[1]}.${nextPatch}`;
             nativeRequired = latestRelease.native_version_required || "1.0";
 
-            // 🛑 THE SPACE-SAVER LOGIC: Overwrite the existing document
             latestRelease.release_version = newVersion;
             latestRelease.file_hash = currentFileHash;
             latestRelease.release_notes = `Auto-deployed OTA patch v${newVersion}`;
             latestRelease.status = 'active';
-            latestRelease.created_at = new Date(); // Refresh the timestamp
+            latestRelease.created_at = new Date(); 
 
             await latestRelease.save();
 
-            // 🧹 CLEANUP: Delete any other lingering OTA documents just to be perfectly clean
             await AppRelease.deleteMany({
                 target_platform: 'android',
                 update_type: 'OTA',
@@ -435,7 +437,6 @@ async function autoDeployOtaUpdate() {
 
             console.log(`🚀 Auto-Updater: Successfully OVERWRITTEN and deployed OTA Version ${newVersion}!`);
         } else {
-            // IF THE DATABASE IS COMPLETELY EMPTY: Create the very first one
             const newRelease = new AppRelease({
                 release_version: newVersion,
                 target_platform: 'android',
@@ -461,7 +462,6 @@ connectDB().then(() => {
     server.listen(PORT, '0.0.0.0', () => {
         console.log(`Server is successfully running on port ${PORT}`);
 
-        // --- TRIGGER AUTO UPDATER ---
         autoDeployOtaUpdate();
 
         startShiftWarningCron(io);
