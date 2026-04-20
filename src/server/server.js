@@ -67,20 +67,19 @@ const shrinkSignalForFcm = (signal) => {
 
     const lines = signal.sdp.split('\n');
     const minimalSdp = lines.filter(line => {
-        // Keep only the absolute structural essentials
-        // Remove ALL candidates, fingerprints, setup info, and feedback rules
-        return line.startsWith('v=') ||
-            line.startsWith('o=') ||
-            line.startsWith('s=') ||
-            line.startsWith('t=') ||
-            line.startsWith('m=') ||
-            line.startsWith('c=') ||
-            line.startsWith('a=mid') ||
-            line.startsWith('a=rtpmap');
+        // Strip out the massive ICE candidate lines. 
+        // The frontend will receive these via the 'ice_candidate' socket event anyway.
+        if (line.startsWith('a=candidate')) {
+            return false;
+        }
+        // Keep everything else (fingerprints, codecs, setup protocols)
+        return true;
     }).join('\n');
 
     const shrunken = JSON.stringify({ type: signal.type, sdp: minimalSdp });
+    console.log(`📏 Original Payload: ${(JSON.stringify(signal).length / 1024).toFixed(2)} KB`);
     console.log(`📏 FCM Payload Size: ${(shrunken.length / 1024).toFixed(2)} KB`);
+
     return shrunken;
 };
 
