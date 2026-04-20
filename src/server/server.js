@@ -9,7 +9,7 @@ const { Server } = require('socket.io');
 const fs = require('fs');
 const crypto = require('crypto');
 const path = require('path');
-const AppRelease = require('../models/AppRelease'); 
+const AppRelease = require('../models/AppRelease');
 
 // --- FIREBASE ADMIN IMPORT ---
 const admin = require('../utils/firebaseAdmin');
@@ -61,13 +61,27 @@ const io = new Server(server, {
     }
 });
 
-// 🚀 HELPER: Shrink WebRTC signal to bypass FCM 4KB limit (Video Fix)
+// 🚀 NUCLEAR SHRINK: Reduces SDP size by ~80% to bypass FCM 4KB limit
 const shrinkSignalForFcm = (signal) => {
     if (!signal || !signal.sdp) return JSON.stringify(signal);
-    // Stripping ICE candidates saves massive space; the app will re-fetch them via Socket once awake
+
     const lines = signal.sdp.split('\n');
-    const minimalSdp = lines.filter(line => !line.startsWith('a=candidate')).join('\n');
-    return JSON.stringify({ ...signal, sdp: minimalSdp });
+    const minimalSdp = lines.filter(line => {
+        // Keep only the absolute structural essentials
+        // Remove ALL candidates, fingerprints, setup info, and feedback rules
+        return line.startsWith('v=') ||
+            line.startsWith('o=') ||
+            line.startsWith('s=') ||
+            line.startsWith('t=') ||
+            line.startsWith('m=') ||
+            line.startsWith('c=') ||
+            line.startsWith('a=mid') ||
+            line.startsWith('a=rtpmap');
+    }).join('\n');
+
+    const shrunken = JSON.stringify({ type: signal.type, sdp: minimalSdp });
+    console.log(`📏 FCM Payload Size: ${(shrunken.length / 1024).toFixed(2)} KB`);
+    return shrunken;
 };
 
 const activeLocations = new Map();
@@ -145,47 +159,49 @@ io.on('connection', (socket) => {
         if (!data || !data.senderId) return;
         socket.to(String(data.senderId)).emit('messages_status_update', {
             viewerId: data.recipientId,
-            status: 'delivered'
+            status: 'seen'
         });
     });
 
-    // --- UPDATED: IMMERSIVE VOIP CALL HANDLER (With Video Space Fix) ---
+    // --- UPDATED: IMMERSIVE VOIP CALL HANDLER ---
     socket.on('call_user', async (data) => {
         if (!data || !data.userToCall) return;
         const { userToCall, signalData, from, callerName, profilePicture, callType } = data;
 
-        // 1. Normal Socket Emit (For Foreground/Website - Always Full Signal)
+        // 1. Full Signal via Socket (For Foreground/Website)
         socket.to(String(userToCall)).emit('incoming_call', {
             signal: signalData, from, callerName, profilePicture, callType
         });
 
-        // 2. FCM High-Priority Data Message (For Background/Killed App)
+        // 2. FCM Wake-up (For Background/Killed App)
         try {
             const callee = await User.findById(userToCall);
-
             if (callee && callee.fcmToken) {
+                // Truncate profile picture link just in case it's a massive Base64
+                const safePic = (profilePicture && profilePicture.length > 500) ? "" : profilePicture;
+
                 const message = {
                     token: callee.fcmToken,
                     data: {
                         type: 'incoming_call',
-                        callerName: String(callerName || 'Unknown'),
+                        callerName: String(callerName || 'Unknown').substring(0, 50),
                         callerId: String(from),
                         callType: String(callType || 'voice'),
-                        profilePicture: String(profilePicture || ''),
-                        // 🚀 Apply the fix here to ensure the packet is small enough for Video
+                        profilePicture: String(safePic || ''),
+                        // 🚀 Apply the Nuclear Shrink to bypass the 4KB limit
                         signal: shrinkSignalForFcm(signalData)
                     },
                     android: {
                         priority: 'high',
-                        ttl: 0 
+                        ttl: 0
                     }
                 };
 
                 await admin.messaging().send(message);
-                console.log(`🔥 Full-Screen VoIP Wake-up sent to ${callee.name} (${callType})`);
+                console.log(`🔥 Wake-up trigger sent to ${callee.name} (${callType})`);
             }
         } catch (error) {
-            console.error("Firebase Wake-Up Error:", error);
+            console.error("❌ Firebase FCM Error:", error.message);
         }
     });
 
@@ -413,7 +429,7 @@ async function autoDeployOtaUpdate() {
         console.log('🤖 Auto-Updater: New update.zip detected! Overwriting previous release...');
 
         let newVersion = "1.0.1";
-        let nativeRequired = "1.0"; 
+        let nativeRequired = "1.0";
 
         if (latestRelease) {
             const versionParts = latestRelease.release_version.split('.');
@@ -425,7 +441,7 @@ async function autoDeployOtaUpdate() {
             latestRelease.file_hash = currentFileHash;
             latestRelease.release_notes = `Auto-deployed OTA patch v${newVersion}`;
             latestRelease.status = 'active';
-            latestRelease.created_at = new Date(); 
+            latestRelease.created_at = new Date();
 
             await latestRelease.save();
 
