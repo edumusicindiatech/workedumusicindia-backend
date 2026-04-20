@@ -61,34 +61,9 @@ const io = new Server(server, {
     }
 });
 
-// 🚀 NUCLEAR SHRINK: Reduces SDP size by ~80% to bypass FCM 4KB limit
-const shrinkSignalForFcm = (signal) => {
-    if (!signal || !signal.sdp) return JSON.stringify(signal);
-
-    const lines = signal.sdp.split('\n');
-    const minimalSdp = lines.filter(line => {
-        // Keep ONLY the absolute structural and security essentials
-        return line.startsWith('v=') ||
-            line.startsWith('o=') ||
-            line.startsWith('s=') ||
-            line.startsWith('t=') ||
-            line.startsWith('m=') ||
-            line.startsWith('c=') ||
-            line.startsWith('a=mid') ||
-            line.startsWith('a=rtpmap') ||
-            line.startsWith('a=fingerprint') || // 🛡️ REQUIRED: Fixes the DTLS crash
-            line.startsWith('a=setup');         // 🛡️ REQUIRED: Handshake protocol
-    }).join('\n');
-
-    const shrunken = JSON.stringify({ type: signal.type, sdp: minimalSdp });
-
-    // This will now consistently output around ~1.5 KB to ~2.5 KB
-    console.log(`📏 FCM Payload Size: ${(shrunken.length / 1024).toFixed(2)} KB`);
-    return shrunken;
-};
-
 const activeLocations = new Map();
 const onlineUsers = new Map();
+const pendingCalls = new Map(); // 🚀 NEW: Store active calls for cold-started apps!
 
 const calculateDistanceMeters = (lat1, lon1, lat2, lon2) => {
     const R = 6371e3;
@@ -107,6 +82,7 @@ io.on('connection', (socket) => {
         const safeUserId = String(userId);
         socket.join(safeUserId);
         onlineUsers.set(safeUserId, socket.id);
+
         try {
             const userGroups = await Group.find({ 'members.user': safeUserId, isActive: true });
             userGroups.forEach(group => {
@@ -115,6 +91,20 @@ io.on('connection', (socket) => {
         } catch (err) {
             console.error("Failed to join group rooms:", err);
         }
+
+        // 🚀 THE MAGIC: Deliver the pending call SDP the moment the cold app wakes up!
+        if (pendingCalls.has(safeUserId)) {
+            const callData = pendingCalls.get(safeUserId);
+            console.log(`📡 Delivering pending call to newly awoken user: ${safeUserId}`);
+            socket.emit('incoming_call', {
+                signal: callData.signalData,
+                from: callData.from,
+                callerName: callData.callerName,
+                profilePicture: callData.profilePicture,
+                callType: callData.callType
+            });
+        }
+
         io.emit('online_users_updated', Array.from(onlineUsers.keys()));
     });
 
@@ -171,16 +161,18 @@ io.on('connection', (socket) => {
         if (!data || !data.userToCall) return;
         const { userToCall, signalData, from, callerName, profilePicture, callType } = data;
 
+        // 🚀 Store the full call data in memory for when the cold app wakes up
+        pendingCalls.set(String(userToCall), data);
+
         // 1. Full Signal via Socket (For Foreground/Website)
         socket.to(String(userToCall)).emit('incoming_call', {
             signal: signalData, from, callerName, profilePicture, callType
         });
 
-        // 2. FCM Wake-up (For Background/Killed App)
+        // 2. FCM Wake-up Ping (For Background/Killed App)
         try {
             const callee = await User.findById(userToCall);
             if (callee && callee.fcmToken) {
-                // Truncate profile picture link just in case it's a massive Base64
                 const safePic = (profilePicture && profilePicture.length > 500) ? "" : profilePicture;
 
                 const message = {
@@ -191,8 +183,9 @@ io.on('connection', (socket) => {
                         callerId: String(from),
                         callType: String(callType || 'voice'),
                         profilePicture: String(safePic || ''),
-                        // 🚀 Apply the Nuclear Shrink to bypass the 4KB limit
-                        signal: shrinkSignalForFcm(signalData)
+                        // 🚀 THE FIX: Send a DUMMY signal. It easily fits in FCM. 
+                        // The real signal will be delivered by the socket upon wake-up.
+                        signal: "{}"
                     },
                     android: {
                         priority: 'high',
@@ -210,11 +203,25 @@ io.on('connection', (socket) => {
 
     socket.on('answer_call', (data) => {
         if (!data || !data.to) return;
+
+        // 🚀 Cleanup pending calls
+        for (const [calleeId, call] of pendingCalls.entries()) {
+            if (String(call.from) === String(data.to)) pendingCalls.delete(calleeId);
+        }
+
         socket.to(String(data.to)).emit('call_accepted', data.signal);
     });
 
     socket.on('end_call', (data) => {
         if (!data || !data.to) return;
+
+        // 🚀 Cleanup pending calls
+        for (const [calleeId, call] of pendingCalls.entries()) {
+            if (String(call.from) === String(data.to) || String(calleeId) === String(data.to)) {
+                pendingCalls.delete(calleeId);
+            }
+        }
+
         socket.to(String(data.to)).emit('call_ended');
     });
 
