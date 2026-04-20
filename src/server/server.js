@@ -67,8 +67,7 @@ const shrinkSignalForFcm = (signal) => {
 
     const lines = signal.sdp.split('\n');
     const minimalSdp = lines.filter(line => {
-        // Keep only the absolute structural essentials
-        // Remove ALL candidates, fingerprints, setup info, and feedback rules
+        // Keep ONLY the absolute structural and security essentials
         return line.startsWith('v=') ||
             line.startsWith('o=') ||
             line.startsWith('s=') ||
@@ -76,10 +75,14 @@ const shrinkSignalForFcm = (signal) => {
             line.startsWith('m=') ||
             line.startsWith('c=') ||
             line.startsWith('a=mid') ||
-            line.startsWith('a=rtpmap');
+            line.startsWith('a=rtpmap') ||
+            line.startsWith('a=fingerprint') || // 🛡️ REQUIRED: Fixes the DTLS crash
+            line.startsWith('a=setup');         // 🛡️ REQUIRED: Handshake protocol
     }).join('\n');
 
     const shrunken = JSON.stringify({ type: signal.type, sdp: minimalSdp });
+
+    // This will now consistently output around ~1.5 KB to ~2.5 KB
     console.log(`📏 FCM Payload Size: ${(shrunken.length / 1024).toFixed(2)} KB`);
     return shrunken;
 };
