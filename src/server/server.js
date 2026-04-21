@@ -161,6 +161,10 @@ io.on('connection', (socket) => {
         const targetStr = String(userToCall);
         const isTargetOnline = onlineUsers.has(targetStr);
 
+        console.log(`\n========================================================`);
+        console.log(`📞 [VOIP INITIATED] User A (${from}) is calling User B (${userToCall})`);
+        console.log(`📡 [VOIP STATUS] User B is currently: ${isTargetOnline ? '🟢 ONLINE' : '🔴 OFFLINE'}`);
+
         socket.emit('call_status', {
             status: isTargetOnline ? 'ringing' : 'calling',
             to: userToCall
@@ -169,9 +173,12 @@ io.on('connection', (socket) => {
         pendingCalls.set(targetStr, data);
 
         if (isTargetOnline) {
+            console.log(`⚡ [VOIP DIRECT] Emitting 'incoming_call' directly via WebSockets.`);
             socket.to(targetStr).emit('incoming_call', {
                 signal: signalData, from, callerName, profilePicture, callType
             });
+        } else {
+            console.log(`⏸️ [VOIP QUEUE] User B is offline. Preparing FCM push notification...`);
         }
 
         try {
@@ -191,15 +198,20 @@ io.on('connection', (socket) => {
                     },
                     android: {
                         priority: 'high',
-                        ttl: 0
+                        ttl: 60000 // 🚀 FIXED: 60 seconds (1 minute) queue limit for calls!
                     }
                 };
 
-                await admin.messaging().send(message);
+                console.log(`🚀 [VOIP FCM] Sending high-priority FCM payload to Google Play Services...`);
+                const response = await admin.messaging().send(message);
+                console.log(`✅ [VOIP FCM SUCCESS] Google accepted the payload! Message ID: ${response}`);
+            } else {
+                console.log(`⚠️ [VOIP FCM WARNING] User B has no FCM token. Cannot wake them up.`);
             }
         } catch (error) {
-            console.error("❌ Firebase FCM Error:", error.message);
+            console.error("❌ [VOIP FCM ERROR] Firebase FCM Error:", error.message);
         }
+        console.log(`========================================================\n`);
     });
 
     socket.on('call_delivered', (data) => {
@@ -484,43 +496,28 @@ async function autoDeployOtaUpdate() {
 
 // =========================================================================
 // 🚀 NATIVE ACKNOWLEDGEMENT ENDPOINT (THE WHATSAPP BRIDGE)
-// When User B's internet turns ON, Google dumps the queue.
-// The Java Service wakes up in the background and hits THIS endpoint.
 // =========================================================================
 app.post('/api/voip/acknowledge', async (req, res) => {
     const { senderId, recipientId, type } = req.body;
 
     console.log(`\n========================================================`);
     console.log(`🚨 [NATIVE BRIDGE WAKE-UP] HARDWARE PING DETECTED! 🚨`);
-    console.log(`========================================================`);
     console.log(`➡️  Receiver (Awoken) : ${recipientId}`);
     console.log(`⬅️  Sender (Waiting)  : ${senderId}`);
     console.log(`🏷️  Payload Type      : ${type}`);
 
     try {
-        // ---------------------------------------------------------------------
-        // STEP 1: DATABASE PERSISTENCE (Permanent Double Tick)
-        // ---------------------------------------------------------------------
         if (type === 'chat_message') {
-            console.log(`💾 [NATIVE BRIDGE DB] Upgrading all 'sent' messages to 'delivered'...`);
-
-            // 🚀 CRITICAL FIX: Explicitly scope to this specific recipient!
+            console.log(`💾 [NATIVE BRIDGE DB] Upgrading message status to 'delivered'...`);
             const dbResult = await Message.updateMany(
-                {
-                    sender: senderId,
-                    recipientId: recipientId, // <--- THIS PREVENTS CROSS-CHAT CONTAMINATION
-                    status: 'sent'
-                },
+                { sender: senderId, recipientId: recipientId, status: 'sent' },
                 { $set: { status: 'delivered' } }
             );
-
-            console.log(`✅ [NATIVE BRIDGE DB] Upgraded ${dbResult.modifiedCount} messages to Double Tick!`);
+            console.log(`✅ [NATIVE BRIDGE DB] Upgraded ${dbResult.modifiedCount} messages.`);
+        } else if (type === 'incoming_call') {
+            console.log(`📱 [NATIVE BRIDGE] Acknowledging incoming call wake-up.`);
         }
 
-        // ---------------------------------------------------------------------
-        // STEP 2: THE LIVE RELAY (Instant UI Update for User A)
-        // If User A is currently looking at the screen, push the Socket event.
-        // ---------------------------------------------------------------------
         const callerSocketId = onlineUsers.get(String(senderId));
 
         if (callerSocketId) {
@@ -535,7 +532,7 @@ app.post('/api/voip/acknowledge', async (req, res) => {
                 io.to(callerSocketId).emit('messages_status_update', { viewerId: recipientId, status: 'delivered' });
             }
         } else {
-            console.log(`🔴 [NATIVE BRIDGE SOCKET] User A is OFFLINE. UI will update from DB next time they open the app.`);
+            console.log(`🔴 [NATIVE BRIDGE SOCKET] User A is OFFLINE. Cannot relay live status.`);
         }
 
         console.log(`========================================================\n`);
