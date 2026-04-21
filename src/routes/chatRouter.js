@@ -132,18 +132,24 @@ chatRouter.post('/message', userAuth, async (req, res) => {
         if (!isGroup) {
             try {
                 const recipient = await User.findById(recipientId);
-                if (recipient && recipient.fcmToken) {
+                const senderUser = await User.findById(senderId); // 🚀 NEW: Fetch Sender
+
+                if (recipient && recipient.fcmToken && senderUser) {
                     console.log(`\n[CHAT FCM QUEUE] 📨 Pushing to Google Play Services for User B (${recipientId})`);
+
+                    // Truncate text so FCM payload doesn't exceed limits
+                    const safeText = text ? text.substring(0, 150) : "Sent an attachment";
 
                     await admin.messaging().send({
                         token: recipient.fcmToken,
                         data: {
-                            type: 'chat_message', // Triggers CallBackgroundService.java
-                            senderId: String(senderId)
+                            type: 'chat_message',
+                            senderId: String(senderId),
+                            senderName: String(senderUser.name), // 🚀 NEW: Tell Android the Name
+                            messageText: String(safeText)        // 🚀 NEW: Tell Android the Text
                         },
                         android: {
                             priority: 'high'
-                            // ⚠️ NO ttl: 0 here! We WANT Google to hold it in the queue if internet is off.
                         }
                     });
                     console.log(`[CHAT FCM QUEUE] ✅ Successfully handed off to Google Hardware Queue.`);
