@@ -95,21 +95,33 @@ io.on('connection', (socket) => {
             console.error("Failed to join group rooms:", err);
         }
 
-        // 🚀 BUG 2 FIX: If they just woke up and have a pending call, tell the caller they are now ringing!
+        // =========================================================================
+        // 🚀 THE WHATSAPP HANDSHAKE FIX 
+        // =========================================================================
         if (pendingCalls.has(safeUserId)) {
             const callData = pendingCalls.get(safeUserId);
-            console.log(`[DEBUG - SERVER] User B (${safeUserId}) woke up. Found pending call from User A (${callData.from}).`);
-
             const callerSocketId = onlineUsers.get(String(callData.from));
-            console.log(`[DEBUG - SERVER] User A's Socket ID is: ${callerSocketId}`);
 
+            // 1. Tell User A that User B's phone is now ringing
             if (callerSocketId) {
-                console.log(`[DEBUG - SERVER] Emitting 'call_status: ringing' to User A.`);
+                console.log(`[VOIP HANDSHAKE] Emitting 'call_status: ringing' to User A.`);
                 io.to(callerSocketId).emit('call_status', { status: 'ringing', to: safeUserId });
-            } else {
-                console.log(`[DEBUG - SERVER ERROR] Could not find User A's socket ID in onlineUsers map!`);
             }
+
+            // 2. GIVE USER B THE HEAVY WEBRTC SIGNAL
+            // User B's app just woke up from FCM with an empty signal: "{}". 
+            // Now that their socket is alive, we pass them the real WebRTC data so they can actually Answer!
+            console.log(`📥 [VOIP HANDSHAKE] Delivering full WebRTC signal to User B's newly booted app...`);
+
+            socket.emit('incoming_call', {
+                signal: callData.signalData, // <--- THIS IS THE MAGIC PIECE
+                from: callData.from,
+                callerName: callData.callerName,
+                profilePicture: callData.profilePicture,
+                callType: callData.callType
+            });
         }
+        // =========================================================================
 
         io.emit('online_users_updated', Array.from(onlineUsers.keys()));
     });
