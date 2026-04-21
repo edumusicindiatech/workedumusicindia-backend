@@ -32,6 +32,7 @@ const LearningRouter = require('../routes/LearningRouter');
 const User = require('../models/User');
 const School = require('../models/School');
 const Notification = require('../models/Notification');
+const Message = require('../models/Message');
 const Group = require('../models/Group');
 const { sendSOSEmergencyEmail } = require('../utils/emailService');
 const chatRouter = require('../routes/chatRouter');
@@ -480,6 +481,71 @@ async function autoDeployOtaUpdate() {
         console.error("❌ Auto-Updater Failed:", error);
     }
 }
+
+// =========================================================================
+// 🚀 NATIVE ACKNOWLEDGEMENT ENDPOINT (THE WHATSAPP BRIDGE)
+// When User B's internet turns ON, Google dumps the queue.
+// The Java Service wakes up in the background and hits THIS endpoint.
+// =========================================================================
+app.post('/api/voip/acknowledge', async (req, res) => {
+    const { senderId, recipientId, type } = req.body;
+
+    console.log(`\n========================================================`);
+    console.log(`🚨 [NATIVE BRIDGE WAKE-UP] HARDWARE PING DETECTED! 🚨`);
+    console.log(`========================================================`);
+    console.log(`➡️  Receiver (Awoken) : ${recipientId}`);
+    console.log(`⬅️  Sender (Waiting)  : ${senderId}`);
+    console.log(`🏷️  Payload Type      : ${type}`);
+
+    try {
+        // ---------------------------------------------------------------------
+        // STEP 1: DATABASE PERSISTENCE (Permanent Double Tick)
+        // ---------------------------------------------------------------------
+        if (type === 'chat_message') {
+            console.log(`💾 [NATIVE BRIDGE DB] Upgrading all 'sent' messages to 'delivered'...`);
+
+            // 🚀 CRITICAL FIX: Explicitly scope to this specific recipient!
+            const dbResult = await Message.updateMany(
+                {
+                    sender: senderId,
+                    recipientId: recipientId, // <--- THIS PREVENTS CROSS-CHAT CONTAMINATION
+                    status: 'sent'
+                },
+                { $set: { status: 'delivered' } }
+            );
+
+            console.log(`✅ [NATIVE BRIDGE DB] Upgraded ${dbResult.modifiedCount} messages to Double Tick!`);
+        }
+
+        // ---------------------------------------------------------------------
+        // STEP 2: THE LIVE RELAY (Instant UI Update for User A)
+        // If User A is currently looking at the screen, push the Socket event.
+        // ---------------------------------------------------------------------
+        const callerSocketId = onlineUsers.get(String(senderId));
+
+        if (callerSocketId) {
+            console.log(`🟢 [NATIVE BRIDGE SOCKET] User A is ONLINE (Socket: ${callerSocketId}). Relaying live update...`);
+
+            if (type === 'incoming_call') {
+                console.log(`☎️ [NATIVE BRIDGE SOCKET] Emitting 'call_status: ringing' to User A.`);
+                io.to(callerSocketId).emit('call_status', { status: 'ringing', to: recipientId });
+            }
+            else if (type === 'chat_message') {
+                console.log(`💬 [NATIVE BRIDGE SOCKET] Emitting Double Grey Tick to User A.`);
+                io.to(callerSocketId).emit('messages_status_update', { viewerId: recipientId, status: 'delivered' });
+            }
+        } else {
+            console.log(`🔴 [NATIVE BRIDGE SOCKET] User A is OFFLINE. UI will update from DB next time they open the app.`);
+        }
+
+        console.log(`========================================================\n`);
+        return res.status(200).json({ success: true });
+
+    } catch (error) {
+        console.error(`❌ [NATIVE BRIDGE ERROR] Failed to process ACK:`, error);
+        return res.status(500).json({ success: false, error: 'Internal Server Error' });
+    }
+});
 
 connectDB().then(() => {
     server.listen(PORT, '0.0.0.0', () => {

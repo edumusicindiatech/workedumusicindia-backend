@@ -10,6 +10,8 @@ const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
 const Group = require('../models/Group'); // <-- IMPORT GROUP MODEL
 const userAuth = require('../middleware/userAuth');
+const admin = require('../config/firebaseAdmin');
+const User = require('../models/User');
 
 // --- HELPER: SAFE R2 MEDIA DELETION ---
 const deleteMediaFromR2 = async (mediaUrl) => {
@@ -78,7 +80,7 @@ chatRouter.post('/generate-download-url', userAuth, async (req, res) => {
 
 // --- CORE CHAT ROUTES (UPDATED FOR GROUPS) ---
 
-// Send Message (Handles both 1-on-1 and Group)
+
 chatRouter.post('/message', userAuth, async (req, res) => {
     try {
         const { senderId, recipientId, text, mediaUrl, mediaType, fileSize, status, isGroup } = req.body;
@@ -87,17 +89,12 @@ chatRouter.post('/message', userAuth, async (req, res) => {
         let groupId = null;
 
         if (isGroup) {
-            // Group Routing
             const group = await Group.findById(recipientId);
             if (!group) return res.status(404).json({ error: "Group not found" });
-
             groupId = group._id;
-
-            // Touch the group to bring it to the top of recent chats
             group.updatedAt = new Date();
             await group.save();
         } else {
-            // 1-on-1 Routing
             let conversation = await Conversation.findOne({
                 isGroup: false,
                 participants: { $all: [senderId, recipientId] }
@@ -117,6 +114,7 @@ chatRouter.post('/message', userAuth, async (req, res) => {
             groupId: groupId,
             isGroup: isGroup || false,
             sender: senderId,
+            recipientId: isGroup ? null : recipientId, // Ensure recipient is saved for 1-on-1
             text: text || "",
             mediaUrl: mediaUrl || "",
             mediaType: mediaType || "text",
@@ -128,8 +126,39 @@ chatRouter.post('/message', userAuth, async (req, res) => {
             await Conversation.findByIdAndUpdate(conversationId, { lastMessage: newMessage._id });
         }
 
+        // =========================================================================
+        // 🚀 WHATSAPP ARCHITECTURE: THE HARDWARE QUEUE (FCM)
+        // =========================================================================
+        if (!isGroup) {
+            try {
+                const recipient = await User.findById(recipientId);
+                if (recipient && recipient.fcmToken) {
+                    console.log(`\n[CHAT FCM QUEUE] 📨 Pushing to Google Play Services for User B (${recipientId})`);
+
+                    await admin.messaging().send({
+                        token: recipient.fcmToken,
+                        data: {
+                            type: 'chat_message', // Triggers CallBackgroundService.java
+                            senderId: String(senderId)
+                        },
+                        android: {
+                            priority: 'high'
+                            // ⚠️ NO ttl: 0 here! We WANT Google to hold it in the queue if internet is off.
+                        }
+                    });
+                    console.log(`[CHAT FCM QUEUE] ✅ Successfully handed off to Google Hardware Queue.`);
+                } else {
+                    console.log(`[CHAT FCM QUEUE] ⚠️ User B has no FCM token. Cannot queue.`);
+                }
+            } catch (fcmErr) {
+                console.error(`[CHAT FCM QUEUE] ❌ Failed to queue push:`, fcmErr.message);
+            }
+        }
+        // =========================================================================
+
         res.status(201).json(newMessage);
     } catch (error) {
+        console.error("[CHAT] Message save error:", error);
         res.status(500).json({ error: "Failed to save message" });
     }
 });
