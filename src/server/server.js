@@ -160,14 +160,24 @@ io.on('connection', (socket) => {
     socket.on('call_user', async (data) => {
         if (!data || !data.userToCall) return;
         const { userToCall, signalData, from, callerName, profilePicture, callType } = data;
+        const targetStr = String(userToCall);
+        const isTargetOnline = onlineUsers.has(targetStr);
 
-        // 🚀 Store the full call data in memory for when the cold app wakes up
-        pendingCalls.set(String(userToCall), data);
-
-        // 1. Full Signal via Socket (For Foreground/Website)
-        socket.to(String(userToCall)).emit('incoming_call', {
-            signal: signalData, from, callerName, profilePicture, callType
+        // 🚀 NEW: IMMEDIATELY TELL CALLER IF USER IS ONLINE (Ringing) OR OFFLINE (Calling)
+        socket.emit('call_status', {
+            status: isTargetOnline ? 'ringing' : 'calling',
+            to: userToCall
         });
+
+        // Store the full call data in memory for when the cold app wakes up
+        pendingCalls.set(targetStr, data);
+
+        if (isTargetOnline) {
+            // 1. Full Signal via Socket (For Foreground/Website)
+            socket.to(targetStr).emit('incoming_call', {
+                signal: signalData, from, callerName, profilePicture, callType
+            });
+        }
 
         // 2. FCM Wake-up Ping (For Background/Killed App)
         try {
@@ -183,8 +193,6 @@ io.on('connection', (socket) => {
                         callerId: String(from),
                         callType: String(callType || 'voice'),
                         profilePicture: String(safePic || ''),
-                        // 🚀 THE FIX: Send a DUMMY signal. It easily fits in FCM. 
-                        // The real signal will be delivered by the socket upon wake-up.
                         signal: "{}"
                     },
                     android: {
@@ -199,6 +207,12 @@ io.on('connection', (socket) => {
         } catch (error) {
             console.error("❌ Firebase FCM Error:", error.message);
         }
+    });
+
+    // 🚀 NEW: CALL DELIVERED RELAY
+    socket.on('call_delivered', (data) => {
+        if (!data || !data.to) return;
+        socket.to(String(data.to)).emit('call_delivered', { from: socket.id });
     });
 
     socket.on('answer_call', (data) => {
