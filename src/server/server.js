@@ -63,7 +63,7 @@ const io = new Server(server, {
 
 const activeLocations = new Map();
 const onlineUsers = new Map();
-const pendingCalls = new Map(); // 🚀 NEW: Store active calls for cold-started apps!
+const pendingCalls = new Map();
 
 const calculateDistanceMeters = (lat1, lon1, lat2, lon2) => {
     const R = 6371e3;
@@ -103,6 +103,12 @@ io.on('connection', (socket) => {
                 profilePicture: callData.profilePicture,
                 callType: callData.callType
             });
+
+            // 🚀 BUG 2 FIX: Tell the caller that the callee is now online and ringing!
+            const callerSocketId = onlineUsers.get(String(callData.from));
+            if (callerSocketId) {
+                io.to(callerSocketId).emit('call_status', { status: 'ringing', to: safeUserId });
+            }
         }
 
         io.emit('online_users_updated', Array.from(onlineUsers.keys()));
@@ -131,13 +137,9 @@ io.on('connection', (socket) => {
         if (!data || !data.recipientId) return;
         const recipientStr = String(data.recipientId);
         socket.to(recipientStr).emit('receive_message', data);
-
-        if (!data.isGroup && onlineUsers.has(recipientStr)) {
-            socket.emit('messages_status_update', {
-                viewerId: recipientStr,
-                status: 'delivered'
-            });
-        }
+        
+        // 🚀 BUG 1 FIX: Removed the premature 'messages_status_update' emit here!
+        // It will now be handled securely by the recipient's phone via 'message_delivered'
     });
 
     socket.on('message_delivered', (data) => {
@@ -156,30 +158,25 @@ io.on('connection', (socket) => {
         });
     });
 
-    // --- UPDATED: IMMERSIVE VOIP CALL HANDLER ---
     socket.on('call_user', async (data) => {
         if (!data || !data.userToCall) return;
         const { userToCall, signalData, from, callerName, profilePicture, callType } = data;
         const targetStr = String(userToCall);
         const isTargetOnline = onlineUsers.has(targetStr);
 
-        // 🚀 NEW: IMMEDIATELY TELL CALLER IF USER IS ONLINE (Ringing) OR OFFLINE (Calling)
         socket.emit('call_status', {
             status: isTargetOnline ? 'ringing' : 'calling',
             to: userToCall
         });
 
-        // Store the full call data in memory for when the cold app wakes up
         pendingCalls.set(targetStr, data);
 
         if (isTargetOnline) {
-            // 1. Full Signal via Socket (For Foreground/Website)
             socket.to(targetStr).emit('incoming_call', {
                 signal: signalData, from, callerName, profilePicture, callType
             });
         }
 
-        // 2. FCM Wake-up Ping (For Background/Killed App)
         try {
             const callee = await User.findById(userToCall);
             if (callee && callee.fcmToken) {
@@ -202,14 +199,12 @@ io.on('connection', (socket) => {
                 };
 
                 await admin.messaging().send(message);
-                console.log(`🔥 Wake-up trigger sent to ${callee.name} (${callType})`);
             }
         } catch (error) {
             console.error("❌ Firebase FCM Error:", error.message);
         }
     });
 
-    // 🚀 NEW: CALL DELIVERED RELAY
     socket.on('call_delivered', (data) => {
         if (!data || !data.to) return;
         socket.to(String(data.to)).emit('call_delivered', { from: socket.id });
@@ -217,25 +212,19 @@ io.on('connection', (socket) => {
 
     socket.on('answer_call', (data) => {
         if (!data || !data.to) return;
-
-        // 🚀 Cleanup pending calls
         for (const [calleeId, call] of pendingCalls.entries()) {
             if (String(call.from) === String(data.to)) pendingCalls.delete(calleeId);
         }
-
         socket.to(String(data.to)).emit('call_accepted', data.signal);
     });
 
     socket.on('end_call', (data) => {
         if (!data || !data.to) return;
-
-        // 🚀 Cleanup pending calls
         for (const [calleeId, call] of pendingCalls.entries()) {
             if (String(call.from) === String(data.to) || String(calleeId) === String(data.to)) {
                 pendingCalls.delete(calleeId);
             }
         }
-
         socket.to(String(data.to)).emit('call_ended');
     });
 
@@ -408,7 +397,6 @@ app.use(cors({
 app.use(express.json({ limit: '30mb' }));
 app.use(express.urlencoded({ limit: '30mb', extended: true }));
 
-// --- SERVING THE PUBLIC FOLDER FOR THE ZIP ---
 app.use(express.static('public'));
 
 app.use('/api/auth', authRouter);
@@ -425,7 +413,6 @@ app.use('/api/app', appRouter);
 
 const PORT = process.env.PORT || 5000;
 
-// --- AUTO-DEPLOY OTA SCRIPT (SPACE-SAVER EDITION) ---
 async function autoDeployOtaUpdate() {
     try {
         const zipPath = path.join(process.cwd(), 'public', 'update.zip');
