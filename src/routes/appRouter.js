@@ -1,6 +1,7 @@
 const express = require('express');
 const appRouter = express.Router();
 const AppRelease = require('../models/AppRelease');
+const ApkVersion = require('../models/ApkVersion');
 
 // GET /api/v1/app/check-update
 appRouter.get('/check-update', async (req, res) => {
@@ -53,6 +54,27 @@ appRouter.get('/check-update', async (req, res) => {
     } catch (error) {
         console.error('Update check failed:', error);
         res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// GET /api/v1/app/download-latest
+appRouter.get('/download-latest', async (req, res) => {
+    try {
+        // Find the most recently uploaded APK version
+        const latestApk = await ApkVersion.findOne().sort({ createdAt: -1 });
+
+        if (!latestApk || !latestApk.downloadUrl) {
+            // Sending standard text instead of JSON since you only want the file
+            return res.status(404).send('No APK update currently available.');
+        }
+
+        // Redirect directly to the apk-closet public URL.
+        // This forces the Capacitor HTTP client to download the actual .apk file directly.
+        res.redirect(latestApk.downloadUrl);
+
+    } catch (error) {
+        console.error('Download route failed:', error);
+        res.status(500).send('Internal server error while fetching the APK.');
     }
 });
 
