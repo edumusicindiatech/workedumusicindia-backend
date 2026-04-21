@@ -95,9 +95,9 @@ io.on('connection', (socket) => {
             console.error("Failed to join group rooms:", err);
         }
 
-        // =========================================================================
+        // ========================================================================
         // 🚀 THE WHATSAPP HANDSHAKE FIX 
-        // =========================================================================
+        // ========================================================================
         if (pendingCalls.has(safeUserId)) {
             const callData = pendingCalls.get(safeUserId);
             const callerSocketId = onlineUsers.get(String(callData.from));
