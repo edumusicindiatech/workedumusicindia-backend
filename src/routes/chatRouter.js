@@ -10,7 +10,7 @@ const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
 const Group = require('../models/Group'); // <-- IMPORT GROUP MODEL
 const userAuth = require('../middleware/userAuth');
-const admin = require('../config/firebaseAdmin');
+const admin = require('../utils/firebaseAdmin')
 const User = require('../models/User');
 
 // --- HELPER: SAFE R2 MEDIA DELETION ---
