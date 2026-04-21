@@ -80,6 +80,8 @@ io.on('connection', (socket) => {
     socket.on('join_room', async (userId) => {
         if (!userId) return;
         const safeUserId = String(userId);
+
+        // Register the user FIRST so they are online
         socket.join(safeUserId);
         onlineUsers.set(safeUserId, socket.id);
 
@@ -92,31 +94,19 @@ io.on('connection', (socket) => {
             console.error("Failed to join group rooms:", err);
         }
 
-        // 🚀 BUG 2 FIX: Deliver the pending call SDP the moment the callee reconnects,
-        // AND immediately notify the caller so their UI switches from "Calling" to "Ringing".
+        // 🚀 BUG 2 FIX: If they just woke up and have a pending call, tell the caller they are now ringing!
         if (pendingCalls.has(safeUserId)) {
             const callData = pendingCalls.get(safeUserId);
-            console.log(`📡 Delivering pending call to newly reconnected user: ${safeUserId}`);
+            console.log(`[DEBUG - SERVER] User B (${safeUserId}) woke up. Found pending call from User A (${callData.from}).`);
 
-            // Step 1 — send the full SDP to the callee who just came online
-            socket.emit('incoming_call', {
-                signal: callData.signalData,
-                from: callData.from,
-                callerName: callData.callerName,
-                profilePicture: callData.profilePicture,
-                callType: callData.callType
-            });
-
-            // Step 2 — tell the caller their target is now reachable (Calling → Ringing)
-            // 🚀 KEY: callData.from is the caller's MongoDB user ID.
-            //         onlineUsers maps userId → socketId, so this lookup is correct.
             const callerSocketId = onlineUsers.get(String(callData.from));
-            console.log(`📡 Notifying caller. callData.from="${callData.from}", resolved socketId="${callerSocketId}"`);
+            console.log(`[DEBUG - SERVER] User A's Socket ID is: ${callerSocketId}`);
+
             if (callerSocketId) {
+                console.log(`[DEBUG - SERVER] Emitting 'call_status: ringing' to User A.`);
                 io.to(callerSocketId).emit('call_status', { status: 'ringing', to: safeUserId });
-                console.log(`✅ Sent call_status:ringing to caller socket ${callerSocketId}`);
             } else {
-                console.warn(`⚠️  Caller ${callData.from} not found in onlineUsers — they may have disconnected.`);
+                console.log(`[DEBUG - SERVER ERROR] Could not find User A's socket ID in onlineUsers map!`);
             }
         }
 
@@ -146,9 +136,6 @@ io.on('connection', (socket) => {
         if (!data || !data.recipientId) return;
         const recipientStr = String(data.recipientId);
         socket.to(recipientStr).emit('receive_message', data);
-        // 🚀 BUG 1 FIX (server side): Removed the premature delivered emit from here.
-        // The recipient's navbar/SharedChat now emits 'message_delivered' back to us
-        // upon receiving the message, which is the correct and reliable signal.
     });
 
     socket.on('message_delivered', (data) => {
@@ -167,30 +154,25 @@ io.on('connection', (socket) => {
         });
     });
 
-    // --- VOIP CALL HANDLER ---
     socket.on('call_user', async (data) => {
         if (!data || !data.userToCall) return;
         const { userToCall, signalData, from, callerName, profilePicture, callType } = data;
         const targetStr = String(userToCall);
         const isTargetOnline = onlineUsers.has(targetStr);
 
-        // Immediately tell caller if target is already online (Ringing) or offline (Calling)
         socket.emit('call_status', {
             status: isTargetOnline ? 'ringing' : 'calling',
             to: userToCall
         });
 
-        // Store the full call data so we can deliver it when the callee reconnects
         pendingCalls.set(targetStr, data);
 
         if (isTargetOnline) {
-            // Full Signal via Socket (for foreground/website)
             socket.to(targetStr).emit('incoming_call', {
                 signal: signalData, from, callerName, profilePicture, callType
             });
         }
 
-        // FCM Wake-up Ping (for background/killed app)
         try {
             const callee = await User.findById(userToCall);
             if (callee && callee.fcmToken) {
@@ -213,14 +195,12 @@ io.on('connection', (socket) => {
                 };
 
                 await admin.messaging().send(message);
-                console.log(`🔥 Wake-up trigger sent to ${callee.name} (${callType})`);
             }
         } catch (error) {
             console.error("❌ Firebase FCM Error:", error.message);
         }
     });
 
-    // CALL DELIVERED RELAY
     socket.on('call_delivered', (data) => {
         if (!data || !data.to) return;
         socket.to(String(data.to)).emit('call_delivered', { from: socket.id });
@@ -228,25 +208,19 @@ io.on('connection', (socket) => {
 
     socket.on('answer_call', (data) => {
         if (!data || !data.to) return;
-
-        // Cleanup pending calls on answer
         for (const [calleeId, call] of pendingCalls.entries()) {
             if (String(call.from) === String(data.to)) pendingCalls.delete(calleeId);
         }
-
         socket.to(String(data.to)).emit('call_accepted', data.signal);
     });
 
     socket.on('end_call', (data) => {
         if (!data || !data.to) return;
-
-        // Cleanup pending calls on hangup
         for (const [calleeId, call] of pendingCalls.entries()) {
             if (String(call.from) === String(data.to) || String(calleeId) === String(data.to)) {
                 pendingCalls.delete(calleeId);
             }
         }
-
         socket.to(String(data.to)).emit('call_ended');
     });
 
