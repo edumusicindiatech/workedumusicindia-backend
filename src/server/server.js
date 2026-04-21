@@ -80,6 +80,8 @@ io.on('connection', (socket) => {
     socket.on('join_room', async (userId) => {
         if (!userId) return;
         const safeUserId = String(userId);
+
+        // Register the user FIRST so they are online
         socket.join(safeUserId);
         onlineUsers.set(safeUserId, socket.id);
 
@@ -92,10 +94,12 @@ io.on('connection', (socket) => {
             console.error("Failed to join group rooms:", err);
         }
 
-        // 🚀 THE MAGIC: Deliver the pending call SDP the moment the cold app wakes up!
+        // 🚀 BUG 2 FIX: If they just woke up and have a pending call, tell the caller they are now ringing!
         if (pendingCalls.has(safeUserId)) {
             const callData = pendingCalls.get(safeUserId);
             console.log(`📡 Delivering pending call to newly awoken user: ${safeUserId}`);
+
+            // Deliver the call payload to the awoken user
             socket.emit('incoming_call', {
                 signal: callData.signalData,
                 from: callData.from,
@@ -104,8 +108,10 @@ io.on('connection', (socket) => {
                 callType: callData.callType
             });
 
-            // 🚀 BUG 2 FIX: Tell the caller that the callee is now online and ringing!
+            // Tell the person who initiated the call that it's now ringing
             const callerSocketId = onlineUsers.get(String(callData.from));
+            console.log(`📡 Notifying caller ${callData.from}, socketId: ${callerSocketId} that user is ringing`);
+
             if (callerSocketId) {
                 io.to(callerSocketId).emit('call_status', { status: 'ringing', to: safeUserId });
             }
@@ -137,9 +143,6 @@ io.on('connection', (socket) => {
         if (!data || !data.recipientId) return;
         const recipientStr = String(data.recipientId);
         socket.to(recipientStr).emit('receive_message', data);
-        
-        // 🚀 BUG 1 FIX: Removed the premature 'messages_status_update' emit here!
-        // It will now be handled securely by the recipient's phone via 'message_delivered'
     });
 
     socket.on('message_delivered', (data) => {
