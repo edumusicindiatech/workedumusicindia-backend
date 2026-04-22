@@ -1128,13 +1128,12 @@ employeeRouter.post("/media/generate-urls", userAuth, async (req, res) => {
 // ==========================================
 employeeRouter.post("/media/save-log", userAuth, async (req, res) => {
     try {
-        // Extracted thumbnails from req.body
         const { schoolId, band, eventName, eventDate, studentsCount, description, uploadedFiles, thumbnails } = req.body;
 
         const mediaType = eventName ? 'Special Event' : 'Regular Visit';
         const finalEventDate = eventDate ? new Date(`${eventDate}T00:00:00.000+05:30`) : new Date();
 
-        // --- INSTANT BASE64 THUMBNAIL UPLOAD ---
+        // --- EXISTING THUMBNAIL LOGIC ---
         let parsedThumbnails = [];
         if (thumbnails && typeof thumbnails === 'string') {
             try {
@@ -1144,13 +1143,11 @@ employeeRouter.post("/media/save-log", userAuth, async (req, res) => {
             }
         }
 
-        // Loop through uploaded files and upload corresponding thumbnail
         for (let i = 0; i < uploadedFiles.length; i++) {
             if (parsedThumbnails[i]) {
                 try {
                     const base64Data = parsedThumbnails[i].replace(/^data:image\/\w+;base64,/, "");
                     const fileBuffer = Buffer.from(base64Data, 'base64');
-
                     const randomHash = crypto.randomBytes(3).toString('hex');
                     const s3Key = `media-thumbnails/thumb_${Date.now()}_${randomHash}.jpg`;
 
@@ -1161,7 +1158,6 @@ employeeRouter.post("/media/save-log", userAuth, async (req, res) => {
                         ContentType: 'image/jpeg'
                     }));
 
-                    // Attach the new URL directly to the file object before saving to DB
                     uploadedFiles[i].thumbnailUrl = `${process.env.R2_PUBLIC_URL}/${s3Key}`;
                 } catch (thumbError) {
                     console.error("Thumbnail upload error:", thumbError);
@@ -1180,17 +1176,42 @@ employeeRouter.post("/media/save-log", userAuth, async (req, res) => {
             description: description || null,
             eventDate: finalEventDate,
             studentRecord: studentsCount ? Number(studentsCount) : null,
-            files: uploadedFiles // Now includes thumbnail URLs!
+            files: uploadedFiles
         });
 
         await newLog.save();
-        await newLog.populate('school', 'schoolName');
 
+        // Populating references for the response and for the notification
+        await newLog.populate([
+            { path: 'school', select: 'schoolName' },
+            { path: 'teacher', select: 'name' }
+        ]);
+
+        // 2. Send Success Response immediately
         res.status(201).json({ success: true, data: newLog });
 
-        // ... (Background notification logic remains identical below here)
+        // 3. Background Broadcast to all employees
         (async () => {
-            // Your existing notification logic...
+            try {
+                const teacherName = newLog.teacher ? newLog.teacher.name : "A colleague";
+                const schoolName = newLog.school ? newLog.school.schoolName : "a school";
+
+                const message = {
+                    topic: 'media_updates', // Ensure all mobile clients subscribe to this topic
+                    data: {
+                        type: 'new_media_upload',
+                        title: 'New Media Uploaded! 🚀',
+                        message: `${teacherName} just uploaded new media from ${schoolName}. Check it out!`,
+                        route: 'employee/media'
+                    }
+                };
+
+                // 'admin' here assumes you have initialized firebase-admin SDK
+                await admin.messaging().send(message);
+                console.log("📢 Broadcast sent to media_updates topic");
+            } catch (err) {
+                console.error("Broadcast failed:", err);
+            }
         })();
 
     } catch (error) {
