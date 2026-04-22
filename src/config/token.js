@@ -12,7 +12,7 @@ const generateRefreshToken = (userId, role) => {
     return jwt.sign(
         { id: userId, role: role },
         process.env.REFRESH_TOKEN_SECRET,
-        { expiresIn: '7d' }
+        { expiresIn: '60d' }
     )
 }
 module.exports = { generateAccessToken, generateRefreshToken }
