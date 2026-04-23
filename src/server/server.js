@@ -484,7 +484,7 @@ async function autoDeployOtaUpdate() {
                 release_version: newVersion,
                 target_platform: 'android',
                 native_version_required: nativeRequired,
-                download_url: 'https://workedumusicindia-backend-1.onrender.com/update.zip',
+                download_url: 'https://workedumusicindia-backend.onrender.com/update.zip',
                 update_type: 'OTA',
                 is_mandatory: true,
                 status: 'active',
