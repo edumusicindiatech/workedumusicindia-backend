@@ -1766,7 +1766,7 @@ employeeRouter.delete('/tasks/:taskId', userAuth, async (req, res) => {
 });
 
 // ============================================================================
-// 35. GET PEERS FOR CHAT (FIXED: NOW INCLUDES PROFILE PICTURE)
+// 35. GET PEERS FOR CHAT (FIXED: NOW INCLUDES FULL LAST MESSAGE DATA)
 // ============================================================================
 employeeRouter.get('/peers', userAuth, async (req, res) => {
     try {
@@ -1777,28 +1777,38 @@ employeeRouter.get('/peers', userAuth, async (req, res) => {
             .select('_id name email role profilePicture designation zone')
             .lean();
 
-        // 2. Fetch all 1-on-1 conversations for the current user
+        // 2. Fetch all 1-on-1 conversations AND populate the last message
         const myConversations = await Conversation.find({
             isGroup: false,
             participants: currentUserId
-        }).lean();
+        })
+            .populate({
+                path: 'lastMessage',
+                populate: { path: 'sender', select: 'name profilePicture' } // 🟢 Replaces the basic .populate('lastMessage')
+            })
+            .lean();
 
-        // 3. Create a map of { peerId: lastMessageTime } for blazing fast lookup
+        // 3. Create a map of { peerId: { lastMessageAt, lastMessage } }
         const conversationMap = {};
         myConversations.forEach(conv => {
-            // Find the ID of the *other* person in the conversation
             const otherParticipantId = conv.participants.find(p => String(p) !== String(currentUserId));
             if (otherParticipantId) {
-                // Attach the timestamp (using updatedAt or createdAt of the conversation)
-                conversationMap[String(otherParticipantId)] = conv.updatedAt || conv.createdAt;
+                conversationMap[String(otherParticipantId)] = {
+                    lastMessageAt: conv.updatedAt || conv.createdAt,
+                    lastMessage: conv.lastMessage || null // 🟢 NEW: Store the message object
+                };
             }
         });
 
-        // 4. Attach the timestamp to the peer data
-        const peersWithTimestamps = peers.map(peer => ({
-            ...peer,
-            lastMessageAt: conversationMap[String(peer._id)] || null // null means no messages yet
-        }));
+        // 4. Attach the timestamp and the actual message data to the peer data
+        const peersWithTimestamps = peers.map(peer => {
+            const peerConvData = conversationMap[String(peer._id)] || {};
+            return {
+                ...peer,
+                lastMessageAt: peerConvData.lastMessageAt || null,
+                lastMessage: peerConvData.lastMessage || null // 🟢 NEW: Send it to React
+            };
+        });
 
         res.status(200).json({
             success: true,

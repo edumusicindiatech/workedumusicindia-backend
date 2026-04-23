@@ -288,6 +288,17 @@ io.on('connection', (socket) => {
         socket.to(String(data.recipientId)).emit('message_deleted', { messageId: data.messageId, timestamp: data.timestamp });
     });
 
+    socket.on('removed_from_group', ({ groupId }) => {
+        // Remove the group from the sidebar list
+        setConversations(prev => prev.filter(c => String(c._id || c.id) !== String(groupId)));
+
+        // If the user happens to have that group open right now, close it
+        if (activeChat && String(activeChat._id || activeChat.id) === String(groupId)) {
+            setActiveChat(null);
+        }
+        toast("You left the group.");
+    });
+
     socket.on('renegotiate', (data) => {
         if (!data || !data.to) return;
         socket.to(String(data.to)).emit('renegotiate', { signal: data.signal });

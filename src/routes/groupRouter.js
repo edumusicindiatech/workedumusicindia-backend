@@ -158,7 +158,8 @@ groupRouter.put('/remove-member', async (req, res) => {
 
         if (req.io) {
             req.io.to(String(groupId)).emit('group_updated', updatedGroup);
-            req.io.to(String(targetUserId)).emit('group_updated', updatedGroup);
+            // 🟢 FIX 1: Send a distinct event to the user who was kicked
+            req.io.to(String(targetUserId)).emit('removed_from_group', { groupId });
         }
 
         res.status(200).json({ success: true, data: updatedGroup });
@@ -181,10 +182,16 @@ groupRouter.put('/leave', async (req, res) => {
         if (group.members.length === 0) {
             group.isActive = false;
         } else if (String(group.creator) === String(userId)) {
-            const sortedMembers = group.members.sort((a, b) => a.joinedAt - b.joinedAt);
+            // 🟢 FIX 2: Safely sort a COPY of the array using Date objects
+            const sortedMembers = [...group.members].sort((a, b) => new Date(a.joinedAt) - new Date(b.joinedAt));
             const oldestMemberId = sortedMembers[0].user;
             group.creator = oldestMemberId;
-            if (!group.admins.includes(oldestMemberId)) group.admins.push(oldestMemberId);
+
+            // 🟢 FIX 3: Safely check for ObjectId existence using .some()
+            const isAlreadyAdmin = group.admins.some(adminId => String(adminId) === String(oldestMemberId));
+            if (!isAlreadyAdmin) {
+                group.admins.push(oldestMemberId);
+            }
         }
 
         await group.save();
@@ -196,11 +203,13 @@ groupRouter.put('/leave', async (req, res) => {
 
         if (req.io) {
             req.io.to(String(groupId)).emit('group_updated', updatedGroup);
-            req.io.to(String(userId)).emit('group_updated', updatedGroup);
+            // 🟢 FIX 1: Send a distinct event to the user who left
+            req.io.to(String(userId)).emit('removed_from_group', { groupId });
         }
 
         res.status(200).json({ success: true, data: updatedGroup });
     } catch (error) {
+        console.error("Leave Group Error:", error);
         res.status(500).json({ success: false, message: "Failed to leave group" });
     }
 });
@@ -305,6 +314,10 @@ groupRouter.get('/my-groups/:userId', async (req, res) => {
             .populate('creator', 'name email profilePicture role')
             .populate('admins', 'name email profilePicture role')
             .populate('members.user', 'name email profilePicture role')
+            .populate({
+                path: 'lastMessage',
+                populate: { path: 'sender', select: 'name profilePicture' }
+            })
             .sort({ updatedAt: -1 });
 
         res.status(200).json({ success: true, data: groups });

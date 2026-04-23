@@ -88,12 +88,11 @@ chatRouter.post('/message', userAuth, async (req, res) => {
         let conversationId = null;
         let groupId = null;
 
+        // 1. Verify recipient/group exists before making the message
         if (isGroup) {
             const group = await Group.findById(recipientId);
             if (!group) return res.status(404).json({ error: "Group not found" });
             groupId = group._id;
-            group.updatedAt = new Date();
-            await group.save();
         } else {
             let conversation = await Conversation.findOne({
                 isGroup: false,
@@ -109,6 +108,7 @@ chatRouter.post('/message', userAuth, async (req, res) => {
             conversationId = conversation._id;
         }
 
+        // 2. Create the message
         const newMessage = await Message.create({
             conversationId: conversationId,
             groupId: groupId,
@@ -122,8 +122,14 @@ chatRouter.post('/message', userAuth, async (req, res) => {
             status: status || 'sent'
         });
 
+        // 3. 🟢 ATTACH THE LAST MESSAGE TO THE CONVERSATION OR GROUP 🟢
         if (conversationId) {
             await Conversation.findByIdAndUpdate(conversationId, { lastMessage: newMessage._id });
+        } else if (groupId) {
+            await Group.findByIdAndUpdate(groupId, {
+                lastMessage: newMessage._id,
+                updatedAt: new Date()
+            });
         }
 
         // =========================================================================
@@ -132,12 +138,11 @@ chatRouter.post('/message', userAuth, async (req, res) => {
         if (!isGroup) {
             try {
                 const recipient = await User.findById(recipientId);
-                const senderUser = await User.findById(senderId); // 🚀 NEW: Fetch Sender
+                const senderUser = await User.findById(senderId);
 
                 if (recipient && recipient.fcmToken && senderUser) {
                     console.log(`\n[CHAT FCM QUEUE] 📨 Pushing to Google Play Services for User B (${recipientId})`);
 
-                    // Truncate text so FCM payload doesn't exceed limits
                     const safeText = text ? text.substring(0, 150) : "Sent an attachment";
 
                     await admin.messaging().send({
@@ -145,8 +150,8 @@ chatRouter.post('/message', userAuth, async (req, res) => {
                         data: {
                             type: 'chat_message',
                             senderId: String(senderId),
-                            senderName: String(senderUser.name), // 🚀 NEW: Tell Android the Name
-                            messageText: String(safeText)        // 🚀 NEW: Tell Android the Text
+                            senderName: String(senderUser.name),
+                            messageText: String(safeText)
                         },
                         android: {
                             priority: 'high'

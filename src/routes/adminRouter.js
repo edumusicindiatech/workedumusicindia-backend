@@ -2225,22 +2225,34 @@ adminRouter.get('/chat-contacts', userAuth, adminAuth, async (req, res) => {
         const myConversations = await Conversation.find({
             isGroup: false,
             participants: currentUserId
-        }).lean();
+        })
+            .populate({
+                path: 'lastMessage',
+                populate: { path: 'sender', select: 'name profilePicture' } // 🟢 Ensures frontend can read the sender's name!
+            })
+            .lean();
 
         // 3. Create a map of { peerId: lastMessageTime }
         const conversationMap = {};
         myConversations.forEach(conv => {
             const otherParticipantId = conv.participants.find(p => String(p) !== String(currentUserId));
             if (otherParticipantId) {
-                conversationMap[String(otherParticipantId)] = conv.updatedAt || conv.createdAt;
+                conversationMap[String(otherParticipantId)] = {
+                    lastMessageAt: conv.updatedAt || conv.createdAt,
+                    lastMessage: conv.lastMessage || null // 🟢 Add this!
+                };
             }
         });
 
-        // 4. Attach the timestamp to the peer data
-        const peersWithTimestamps = peers.map(peer => ({
-            ...peer,
-            lastMessageAt: conversationMap[String(peer._id)] || null
-        }));
+        // 4. Attach the timestamp and the actual message data to the peer data
+        const peersWithTimestamps = peers.map(peer => {
+            const peerConvData = conversationMap[String(peer._id)] || {};
+            return {
+                ...peer,
+                lastMessageAt: peerConvData.lastMessageAt || null,
+                lastMessage: peerConvData.lastMessage || null // 🟢 Add this!
+            };
+        });
 
         res.status(200).json({
             success: true,
