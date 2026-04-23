@@ -262,9 +262,11 @@ io.on('connection', (socket) => {
                     token: userB.fcmToken,
                     data: {
                         type: "call_cancelled" // This triggers the new Java block you added
+                    },
+                    android: {
+                        priority: "high",
+                        ttl: 0 // Deliver instantly or drop it
                     }
-                    // IMPORTANT: Keep this payload strictly as 'data'. 
-                    // Do not add a 'notification' object.
                 };
                 await admin.messaging().send(message);
                 console.log(`Silent cancel FCM sent to user ${data.to}`);
