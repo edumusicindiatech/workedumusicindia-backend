@@ -242,34 +242,36 @@ io.on('connection', (socket) => {
     socket.on('end_call', async (data) => {
         if (!data || !data.to) return;
 
-        // 1. YOUR EXISTING LOGIC: Clean up the pending calls memory
+        // 1. Extract the caller's name and clean up memory
+        let missedCallerName = "Someone";
         for (const [calleeId, call] of pendingCalls.entries()) {
             if (String(call.from) === String(data.to) || String(calleeId) === String(data.to)) {
+                if (call.callerName) missedCallerName = call.callerName; // 👈 Grab the name!
                 pendingCalls.delete(calleeId);
             }
         }
 
-        // 2. YOUR EXISTING LOGIC: Notify the frontend if the app happens to be open
+        // 2. Notify frontend if open
         socket.to(String(data.to)).emit('call_ended');
 
-        // 3. THE FIX: Fire a silent FCM push to kill the notification if the app is closed
+        // 3. Fire silent push with the caller's name
         try {
-            // Note: Adapt this line to match how you fetch users in your specific database setup
             const userB = await User.findById(data.to);
 
             if (userB && userB.fcmToken) {
                 const message = {
                     token: userB.fcmToken,
                     data: {
-                        type: "call_cancelled" // This triggers the new Java block you added
+                        type: "call_cancelled",
+                        callerName: missedCallerName // 👈 Pass it in the data payload
                     },
                     android: {
                         priority: "high",
-                        ttl: 0 // Deliver instantly or drop it
+                        ttl: 0
                     }
                 };
                 await admin.messaging().send(message);
-                console.log(`Silent cancel FCM sent to user ${data.to}`);
+                console.log(`✅ Silent cancel FCM sent to user ${data.to} for Missed Call from ${missedCallerName}`);
             }
         } catch (error) {
             console.error("Failed to send call_cancelled FCM:", error);
