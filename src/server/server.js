@@ -284,14 +284,9 @@ io.on('connection', (socket) => {
         socket.to(String(data.to)).emit('peer_is_busy');
     });
 
-    socket.on('hold_call', (data) => {
+    socket.on('dropped_for_another_call', (data) => {
         if (!data || !data.to) return;
-        socket.to(String(data.to)).emit('call_on_hold', { by: data.from });
-    });
-
-    socket.on('resume_call', (data) => {
-        if (!data || !data.to) return;
-        socket.to(String(data.to)).emit('call_resumed');
+        socket.to(String(data.to)).emit('dropped_for_another_call');
     });
 
     socket.on('trigger_sos', async (data) => {
