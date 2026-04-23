@@ -2239,7 +2239,7 @@ adminRouter.get('/chat-contacts', userAuth, adminAuth, async (req, res) => {
         // 4. Attach the timestamp to the peer data
         const peersWithTimestamps = peers.map(peer => ({
             ...peer,
-            lastMessageAt: conversationMap[String(peer._id)] || null 
+            lastMessageAt: conversationMap[String(peer._id)] || null
         }));
 
         res.status(200).json({
@@ -2252,5 +2252,30 @@ adminRouter.get('/chat-contacts', userAuth, adminAuth, async (req, res) => {
     }
 });
 
+
+adminRouter.post('/save-fcm-token', userAuth, adminAuth, async (req, res) => {
+    try {
+        const { fcmToken } = req.body;
+
+        // Ensure your auth middleware provides the user's ID
+        const userId = req.user?.id || req.user?._id;
+
+        if (!userId) {
+            return res.status(401).json({ success: false, message: "Unauthorized" });
+        }
+
+        if (!fcmToken) {
+            return res.status(400).json({ success: false, message: "FCM token is required" });
+        }
+
+        // Update the user's document with their new active device token
+        await User.findByIdAndUpdate(userId, { fcmToken: fcmToken });
+
+        res.status(200).json({ success: true, message: "FCM Token secured!" });
+    } catch (error) {
+        console.error("Error saving FCM token:", error);
+        res.status(500).json({ success: false, message: "Server error while saving token" });
+    }
+});
 
 module.exports = adminRouter;

@@ -31,6 +31,11 @@ const userSchema = new mongoose.Schema({
 
     assignments: [assignmentSchema],
 
+    fcmToken: {
+        type: String,
+        default: null
+    },
+
     // FIXED: Added frontend-matching keys and initialized the parent object
     preferences: {
         type: {

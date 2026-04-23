@@ -232,5 +232,23 @@ authRouter.post('/logout', async (req, res) => {
     }
 });
 
+authRouter.post('/update-fcm-token', async (req, res) => {
+    try {
+        const { userId, fcmToken } = req.body;
+
+        if (!userId || !fcmToken) {
+            return res.status(400).json({ success: false, message: "Missing User ID or Token" });
+        }
+
+        // Update the user's token in MongoDB
+        await User.findByIdAndUpdate(userId, { fcmToken });
+
+        res.status(200).json({ success: true, message: "FCM Token updated" });
+    } catch (error) {
+        console.error("FCM Token Error:", error);
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
+
 
 module.exports = authRouter
