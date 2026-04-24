@@ -28,6 +28,7 @@ const userSchema = new mongoose.Schema({
     role: { type: String, enum: ['SuperAdmin', 'Admin', 'Employee'], default: 'Employee' },
     designation: { type: String, default: 'Teacher' },
     zone: { type: String },
+    allowedContacts: [{ type: String }],
 
     assignments: [assignmentSchema],
 

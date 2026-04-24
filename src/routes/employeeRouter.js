@@ -1766,47 +1766,59 @@ employeeRouter.delete('/tasks/:taskId', userAuth, async (req, res) => {
 });
 
 // ============================================================================
-// 35. GET PEERS FOR CHAT (FIXED: NOW INCLUDES FULL LAST MESSAGE DATA)
+// 35. GET PEERS FOR CHAT (STRICT WHITELIST ENFORCEMENT)
 // ============================================================================
 employeeRouter.get('/peers', userAuth, async (req, res) => {
     try {
         const currentUserId = req.user._id;
 
-        // 1. Fetch all peers using .lean() so we can modify the returned objects
-        const peers = await User.find({ _id: { $ne: currentUserId } })
+        // 1. Fetch the current user to check their role and whitelist
+        const currentUser = await User.findById(currentUserId).lean();
+
+        // 2. Build the query. By default, don't show themselves.
+        let peerQuery = { _id: { $ne: currentUserId } };
+
+        // 🟢 THE RESTRICTION: If they are an Employee, ONLY fetch users in their allowedContacts array.
+        // If the array is empty (or undefined), this strictly returns NO ONE.
+        if (currentUser.role === 'Employee') {
+            peerQuery._id = { $in: currentUser.allowedContacts || [] };
+        }
+
+        // 3. Fetch the filtered peers
+        const peers = await User.find(peerQuery)
             .select('_id name email role profilePicture designation zone')
             .lean();
 
-        // 2. Fetch all 1-on-1 conversations AND populate the last message
+        // 4. Fetch all 1-on-1 conversations AND populate the last message
         const myConversations = await Conversation.find({
             isGroup: false,
             participants: currentUserId
         })
             .populate({
                 path: 'lastMessage',
-                populate: { path: 'sender', select: 'name profilePicture' } // 🟢 Replaces the basic .populate('lastMessage')
+                populate: { path: 'sender', select: 'name profilePicture' }
             })
             .lean();
 
-        // 3. Create a map of { peerId: { lastMessageAt, lastMessage } }
+        // 5. Create a map of { peerId: { lastMessageAt, lastMessage } }
         const conversationMap = {};
         myConversations.forEach(conv => {
             const otherParticipantId = conv.participants.find(p => String(p) !== String(currentUserId));
             if (otherParticipantId) {
                 conversationMap[String(otherParticipantId)] = {
                     lastMessageAt: conv.updatedAt || conv.createdAt,
-                    lastMessage: conv.lastMessage || null // 🟢 NEW: Store the message object
+                    lastMessage: conv.lastMessage || null
                 };
             }
         });
 
-        // 4. Attach the timestamp and the actual message data to the peer data
+        // 6. Attach the timestamp and the actual message data to the peer data
         const peersWithTimestamps = peers.map(peer => {
             const peerConvData = conversationMap[String(peer._id)] || {};
             return {
                 ...peer,
                 lastMessageAt: peerConvData.lastMessageAt || null,
-                lastMessage: peerConvData.lastMessage || null // 🟢 NEW: Send it to React
+                lastMessage: peerConvData.lastMessage || null
             };
         });
 
@@ -1820,6 +1832,9 @@ employeeRouter.get('/peers', userAuth, async (req, res) => {
     }
 });
 
+// ============================================================================
+// 36. SAVE FCM TOKEN FOR PUSH NOTIFICATIONS (STRICTLY PROTECTED ENDPOINT)
+// ============================================================================
 employeeRouter.post('/save-fcm-token', userAuth, async (req, res) => {
     try {
         const { fcmToken } = req.body;

@@ -245,7 +245,7 @@ chatRouter.put('/message/edit/:id', userAuth, async (req, res) => {
     }
 });
 
-// Delete for Everyone (Smart Routing for Groups vs Peers)
+// Delete for Everyone (Smart Routing for Groups vs Peers - AUDIT TRAIL PRESERVED)
 chatRouter.put('/message/delete-everyone', userAuth, async (req, res) => {
     try {
         const { messageIds, userId } = req.body;
@@ -262,13 +262,7 @@ chatRouter.put('/message/delete-everyone', userAuth, async (req, res) => {
         const updatedIds = [];
 
         for (const msg of validMessages) {
-            if (msg.mediaUrl) {
-                const count = await Message.countDocuments({ mediaUrl: msg.mediaUrl });
-                if (count <= 1) await deleteMediaFromR2(msg.mediaUrl);
-            }
-
-            msg.text = "";
-            msg.mediaUrl = "";
+            // ✅ ONLY flip the flag. The UI hides it, but DB & Cloudflare keep the data.
             msg.isDeletedForEveryone = true;
             await msg.save();
 
@@ -304,40 +298,18 @@ chatRouter.put('/message/delete-everyone', userAuth, async (req, res) => {
     }
 });
 
-// Delete for Me (Handles both Conversation & Group ghost cleanups)
+// Delete for Me (AUDIT TRAIL PRESERVED)
 chatRouter.put('/message/delete-me', userAuth, async (req, res) => {
     try {
         const { messageIds, userId } = req.body;
 
+        // Just hide it from this specific user
         await Message.updateMany(
             { _id: { $in: messageIds } },
             { $addToSet: { deletedFor: userId } }
         );
 
-        // Auto-Wipe ghost messages
-        const updatedMessages = await Message.find({ _id: { $in: messageIds } })
-            .populate('conversationId')
-            .populate('groupId');
-
-        for (const msg of updatedMessages) {
-            let isOrphaned = false;
-
-            if (msg.isGroup && msg.groupId) {
-                // Orphaned if ALL group members deleted it
-                if (msg.deletedFor.length >= msg.groupId.members.length) isOrphaned = true;
-            } else if (msg.conversationId) {
-                // Orphaned if BOTH peers deleted it
-                if (msg.deletedFor.length === msg.conversationId.participants.length) isOrphaned = true;
-            }
-
-            if (isOrphaned) {
-                if (msg.mediaUrl) {
-                    const count = await Message.countDocuments({ mediaUrl: msg.mediaUrl });
-                    if (count <= 1) await deleteMediaFromR2(msg.mediaUrl);
-                }
-                await Message.findByIdAndDelete(msg._id);
-            }
-        }
+        // ❌ REMOVED "Auto-Wipe ghost messages" logic to permanently preserve audit trail
 
         res.status(200).json({ success: true });
     } catch (error) {
@@ -345,7 +317,7 @@ chatRouter.put('/message/delete-me', userAuth, async (req, res) => {
     }
 });
 
-// Clear Entire 1-on-1 Chat
+// Clear Entire 1-on-1 Chat (AUDIT TRAIL PRESERVED)
 chatRouter.put('/clear/:user1/:user2', userAuth, async (req, res) => {
     try {
         const { user1, user2 } = req.params;
@@ -357,24 +329,13 @@ chatRouter.put('/clear/:user1/:user2', userAuth, async (req, res) => {
 
         if (!conversation) return res.status(404).json({ success: false, error: "Conversation not found" });
 
+        // Hide all messages from user1
         await Message.updateMany(
             { conversationId: conversation._id },
             { $addToSet: { deletedFor: user1 } }
         );
 
-        // Sweep Ghost Messages
-        const orphanedMessages = await Message.find({
-            conversationId: conversation._id,
-            [`deletedFor.${conversation.participants.length - 1}`]: { $exists: true }
-        });
-
-        for (const msg of orphanedMessages) {
-            if (msg.mediaUrl) {
-                const count = await Message.countDocuments({ mediaUrl: msg.mediaUrl });
-                if (count <= 1) await deleteMediaFromR2(msg.mediaUrl);
-            }
-            await Message.findByIdAndDelete(msg._id);
-        }
+        // ❌ REMOVED "Sweep Ghost Messages" logic to permanently preserve audit trail
 
         res.status(200).json({ success: true, message: "Chat cleared" });
     } catch (error) {
@@ -382,7 +343,7 @@ chatRouter.put('/clear/:user1/:user2', userAuth, async (req, res) => {
     }
 });
 
-// Clear Entire Group Chat
+// Clear Entire Group Chat (AUDIT TRAIL PRESERVED)
 chatRouter.put('/clear/group/:groupId/:userId', userAuth, async (req, res) => {
     try {
         const { groupId, userId } = req.params;
@@ -390,24 +351,13 @@ chatRouter.put('/clear/group/:groupId/:userId', userAuth, async (req, res) => {
         const group = await Group.findById(groupId);
         if (!group) return res.status(404).json({ success: false, error: "Group not found" });
 
+        // Hide all messages from this user
         await Message.updateMany(
             { groupId: group._id },
             { $addToSet: { deletedFor: userId } }
         );
 
-        // Sweep Ghost Messages for Groups
-        const orphanedMessages = await Message.find({
-            groupId: group._id,
-            [`deletedFor.${group.members.length - 1}`]: { $exists: true }
-        });
-
-        for (const msg of orphanedMessages) {
-            if (msg.mediaUrl) {
-                const count = await Message.countDocuments({ mediaUrl: msg.mediaUrl });
-                if (count <= 1) await deleteMediaFromR2(msg.mediaUrl);
-            }
-            await Message.findByIdAndDelete(msg._id);
-        }
+        // ❌ REMOVED "Sweep Ghost Messages" logic to permanently preserve audit trail
 
         res.status(200).json({ success: true, message: "Group chat cleared" });
     } catch (error) {

@@ -21,12 +21,15 @@ const LeaveRequest = require('../models/LeaveRequest');
 const Settings = require('../models/Settings');
 const { canSendEmailToUser } = require('../utils/canSendEmailToUser');
 const MediaLog = require('../models/MediaLog');
-const { PutObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
+const { PutObjectCommand, DeleteObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const assetsS3Client = require('../config/assetsS3Client');
 const s3Client = require('../config/s3');
 const { getISTDayOfWeek, getISTDateString } = require('../utils/timeHelper');
 const Conversation = require('../models/Conversation');
+const chatS3Client = require('../config/chatS3Client');
+const Group = require('../models/Group');
+const Message = require('../models/Message');
 
 // ==========================================
 // 1. CREATE ADMIN (SuperAdmin Only)
@@ -2264,7 +2267,9 @@ adminRouter.get('/chat-contacts', userAuth, adminAuth, async (req, res) => {
     }
 });
 
-
+// ==========================================
+// 34. SAVE THE FCM TOKEN FOR PUSH NOTIFICATIONS
+// ==========================================
 adminRouter.post('/save-fcm-token', userAuth, adminAuth, async (req, res) => {
     try {
         const { fcmToken } = req.body;
@@ -2287,6 +2292,293 @@ adminRouter.post('/save-fcm-token', userAuth, adminAuth, async (req, res) => {
     } catch (error) {
         console.error("Error saving FCM token:", error);
         res.status(500).json({ success: false, message: "Server error while saving token" });
+    }
+});
+
+
+// ==========================================
+// 35. GET EMPLOYEE CHAT WHITELIST
+// ==========================================
+adminRouter.get('/employees/:id/whitelist', userAuth, adminAuth, async (req, res) => {
+    try {
+        const employee = await User.findById(req.params.id).lean();
+        if (!employee) return res.status(404).json({ success: false, message: "Employee not found" });
+
+        res.status(200).json({
+            success: true,
+            data: employee.allowedContacts || []
+        });
+    } catch (error) {
+        console.error("Fetch Whitelist Error:", error);
+        res.status(500).json({ success: false, message: "Server error fetching whitelist." });
+    }
+});
+
+// ==========================================
+// 35. UPDATE EMPLOYEE CHAT WHITELIST
+// ==========================================
+adminRouter.put('/employees/:id/whitelist', userAuth, adminAuth, async (req, res) => {
+    try {
+        const { allowedContacts } = req.body;
+
+        const employee = await User.findByIdAndUpdate(
+            req.params.id,
+            { $set: { allowedContacts: allowedContacts || [] } },
+            { new: true }
+        );
+
+        if (!employee) return res.status(404).json({ success: false, message: "Employee not found" });
+
+        res.status(200).json({ success: true, message: "Whitelist updated successfully." });
+    } catch (error) {
+        console.error("Update Whitelist Error:", error);
+        res.status(500).json({ success: false, message: "Server error updating whitelist." });
+    }
+});
+
+
+// ============================================================================
+// 36. AUDIT: GET ALL CONVERSATIONS FOR AN EMPLOYEE (ONLY NON-EMPTY)
+// ============================================================================
+adminRouter.get('/employees/:id/audit-chats', userAuth, adminAuth, async (req, res) => {
+    try {
+        const targetEmployeeId = req.params.id;
+
+        // 1. Get all 1-on-1 conversations the employee is part of
+        const peerChats = await Conversation.find({
+            isGroup: false,
+            participants: targetEmployeeId
+        })
+            .populate('participants', 'name email role profilePicture')
+            .lean();
+
+        // 2. Get all group conversations the employee is a member of
+        const groupChats = await Group.find({
+            'members.user': targetEmployeeId
+        })
+            .select('name groupIcon creator admins members updatedAt')
+            .lean();
+
+        // 3. 🟢 THE FIX: Filter out completely empty chats dynamically
+        const validPeerChats = [];
+        for (const chat of peerChats) {
+            const hasMessages = await Message.exists({ conversationId: chat._id });
+            if (hasMessages) validPeerChats.push(chat);
+        }
+
+        const validGroupChats = [];
+        for (const group of groupChats) {
+            const hasMessages = await Message.exists({ groupId: group._id });
+            if (hasMessages) validGroupChats.push(group);
+        }
+
+        // 4. Format 1-on-1 chats for the frontend
+        const formattedPeerChats = validPeerChats.map(chat => {
+            const peer = chat.participants.find(p => String(p._id) !== String(targetEmployeeId));
+            return {
+                id: chat._id,
+                isGroup: false,
+                name: peer ? peer.name : "Unknown User",
+                profilePicture: peer ? peer.profilePicture : null,
+                role: peer ? peer.role : "",
+                updatedAt: chat.updatedAt || chat.createdAt
+            };
+        });
+
+        // 5. Format Group chats for the frontend
+        const formattedGroupChats = validGroupChats.map(group => ({
+            id: group._id,
+            isGroup: true,
+            name: group.name,
+            profilePicture: group.groupIcon || null,
+            role: "Group Chat",
+            updatedAt: group.updatedAt || new Date()
+        }));
+
+        // Combine and sort by most recently active
+        const allChats = [...formattedPeerChats, ...formattedGroupChats].sort(
+            (a, b) => new Date(b.updatedAt) - new Date(a.updatedAt)
+        );
+
+        res.status(200).json({ success: true, data: allChats });
+    } catch (error) {
+        console.error("Audit Chat List Error:", error);
+        res.status(500).json({ success: false, message: "Server error fetching audit chat list." });
+    }
+});
+
+// ============================================================================
+// 37. AUDIT: GET MESSAGES (UNFILTERED) FOR 1-ON-1 OR GROUP
+// ============================================================================
+adminRouter.get('/audit/messages', userAuth, adminAuth, async (req, res) => {
+    try {
+        const { targetId, isGroup } = req.query;
+
+        if (!targetId) {
+            return res.status(400).json({ success: false, message: "targetId is required." });
+        }
+
+        // 🟢 THE MAGIC: Notice we do NOT filter by 'deletedFor' or 'isDeletedForEveryone'.
+        // We fetch 100% of the messages attached to this chat.
+        const query = isGroup === 'true'
+            ? { groupId: targetId }
+            : { conversationId: targetId };
+
+        const messages = await Message.find(query)
+            .populate('sender', 'name profilePicture')
+            .sort({ createdAt: 1 })
+            .lean();
+
+        res.status(200).json({ success: true, data: messages });
+    } catch (error) {
+        console.error("Audit Messages Error:", error);
+        res.status(500).json({ success: false, message: "Server error fetching audit messages." });
+    }
+});
+
+// ============================================================================
+// 38. AUDIT: HARD DELETE A MESSAGE & MEDIA PERMANENTLY
+// ============================================================================
+adminRouter.delete('/audit/message/:messageId', userAuth, adminAuth, async (req, res) => {
+    try {
+        const { messageId } = req.params;
+
+        const msg = await Message.findById(messageId);
+        if (!msg) {
+            return res.status(404).json({ success: false, message: "Message not found." });
+        }
+
+        // 1. Physically delete media from Cloudflare R2 if it exists
+        if (msg.mediaUrl && msg.mediaUrl.trim() !== "") {
+            // Check if this exact URL is used by any *other* forwarded message
+            const count = await Message.countDocuments({ mediaUrl: msg.mediaUrl });
+
+            // If this is the only message using this file, destroy it from Cloudflare
+            if (count <= 1) {
+                try {
+                    const urlParts = new URL(msg.mediaUrl);
+                    let key = urlParts.pathname.startsWith('/') ? urlParts.pathname.substring(1) : urlParts.pathname;
+
+                    // You must have 'chatS3Client' and 'DeleteObjectCommand' imported at the top of adminRouter.js
+                    const { DeleteObjectCommand } = require('@aws-sdk/client-s3');
+                    const chatS3Client = require('../config/chatS3Client'); // Adjust path if needed
+
+                    const command = new DeleteObjectCommand({
+                        Bucket: process.env.CHAT_MEDIA_BUCKET.replace(/['"]/g, ''),
+                        Key: key,
+                    });
+                    await chatS3Client.send(command);
+                    console.log(`[Audit] Hard deleted media from R2: ${key}`);
+                } catch (r2Error) {
+                    console.error("[Audit] R2 Deletion Failed:", r2Error);
+                }
+            }
+        }
+
+        // 2. Erase the message from MongoDB permanently
+        await Message.findByIdAndDelete(messageId);
+
+        // 3. Silent ping to connected clients (Optional, but keeps admin screens in sync)
+        if (req.io) {
+            req.io.emit("message_deleted", { messageId: messageId });
+        }
+
+        res.status(200).json({ success: true, message: "Message permanently wiped from database." });
+    } catch (error) {
+        console.error("Audit Hard Delete Error:", error);
+        res.status(500).json({ success: false, message: "Server error executing hard delete." });
+    }
+});
+
+// ============================================================================
+// 39. AUDIT: GENERATE SECURE DOWNLOAD URL FOR MEDIA
+// ============================================================================
+adminRouter.post('/generate-download-url', userAuth, adminAuth, async (req, res) => {
+    try {
+        const { fileUrl } = req.body;
+
+        if (!fileUrl) {
+            return res.status(400).json({ success: false, message: "File URL is required" });
+        }
+
+        // Extract the exact file key from the public URL
+        const urlObject = new URL(fileUrl);
+        const fileKey = urlObject.pathname.substring(1); // Removes the leading '/'
+        const fileName = fileKey.split('/').pop() || "audit_media_file";
+
+        // Ask Cloudflare R2/AWS S3 for a URL that FORCES a download
+        const command = new GetObjectCommand({
+            Bucket: process.env.CHAT_MEDIA_BUCKET.replace(/['"]/g, ''), // Adjust bucket env var if needed
+            Key: fileKey,
+            ResponseContentDisposition: `attachment; filename="${fileName}"`
+        });
+
+        // Generate a quick expiring link (valid for 5 minutes)
+        const signedUrl = await getSignedUrl(chatS3Client, command, { expiresIn: 300 });
+
+        res.status(200).json({ success: true, downloadUrl: signedUrl });
+
+    } catch (error) {
+        console.error("Generate Download URL Error:", error);
+        res.status(500).json({ success: false, message: "Failed to generate download link" });
+    }
+});
+
+// ============================================================================
+// 40. AUDIT: HARD CLEAR ENTIRE CHAT (DB & CLOUDFLARE)
+// ============================================================================
+adminRouter.delete('/audit/chat', userAuth, adminAuth, async (req, res) => {
+    try {
+        const { targetId, isGroup } = req.body;
+
+        if (!targetId) {
+            return res.status(400).json({ success: false, message: "targetId is required." });
+        }
+
+        const query = isGroup === true || isGroup === 'true'
+            ? { groupId: targetId }
+            : { conversationId: targetId };
+
+        // 1. Find all messages in this chat to delete their media
+        const messages = await Message.find(query);
+
+        for (const msg of messages) {
+            if (msg.mediaUrl && msg.mediaUrl.trim() !== "") {
+                const count = await Message.countDocuments({ mediaUrl: msg.mediaUrl });
+
+                // If this is the only message using this file, destroy it from Cloudflare
+                if (count <= 1) {
+                    try {
+                        const urlParts = new URL(msg.mediaUrl);
+                        let key = urlParts.pathname.startsWith('/') ? urlParts.pathname.substring(1) : urlParts.pathname;
+
+                        const { DeleteObjectCommand } = require('@aws-sdk/client-s3');
+                        const chatS3Client = require('../config/chatS3Client');
+
+                        const command = new DeleteObjectCommand({
+                            Bucket: process.env.CHAT_MEDIA_BUCKET.replace(/['"]/g, ''),
+                            Key: key,
+                        });
+                        await chatS3Client.send(command);
+                    } catch (r2Error) {
+                        console.error("[Audit] R2 Bulk Deletion Failed:", r2Error);
+                    }
+                }
+            }
+        }
+
+        // 2. Erase all messages from MongoDB permanently
+        await Message.deleteMany(query);
+
+        // 3. Silent ping to connected clients
+        if (req.io) {
+            req.io.emit("audit_chat_cleared", { targetId });
+        }
+
+        res.status(200).json({ success: true, message: "Entire chat wiped from database." });
+    } catch (error) {
+        console.error("Audit Hard Clear Chat Error:", error);
+        res.status(500).json({ success: false, message: "Server error executing hard clear." });
     }
 });
 

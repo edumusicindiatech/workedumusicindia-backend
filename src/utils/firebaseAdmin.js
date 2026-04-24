@@ -7,7 +7,7 @@ if (process.env.FIREBASE_SERVICE_ACCOUNT) {
     serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
 } else {
     // Local Development: Require the physical file
-    serviceAccount = require('../../firebase-service-account.json');
+    serviceAccount = require('../../firbase-service-account.json');
 }
 
 admin.initializeApp({
