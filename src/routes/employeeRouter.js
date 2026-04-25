@@ -1781,7 +1781,10 @@ employeeRouter.get('/peers', userAuth, async (req, res) => {
         // 🟢 THE RESTRICTION: If they are an Employee, ONLY fetch users in their allowedContacts array.
         // If the array is empty (or undefined), this strictly returns NO ONE.
         if (currentUser.role === 'Employee') {
-            peerQuery._id = { $in: currentUser.allowedContacts || [] };
+            peerQuery.$or = [
+                { _id: { $in: currentUser.allowedContacts || [] } },
+                { role: { $in: ['Admin', 'SuperAdmin'] } }
+            ];
         }
 
         // 3. Fetch the filtered peers
