@@ -185,7 +185,7 @@ authRouter.get('/refresh-token', async (req, res) => {
                 if (!user) {
                     return res.status(401).json({
                         success: false,
-                        message: "Unauthorized: User no longer exists"
+                        message: "Unauthorized: User no longer exists" 
                     });
                 }
 
