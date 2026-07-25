@@ -6,41 +6,55 @@ const ApkVersion = require('../models/ApkVersion');
 // GET /api/v1/app/check-update
 appRouter.get('/check-update', async (req, res) => {
     try {
-        // Extract the versions sent by the Capacitor app
         const { platform, current_native_version, current_ota_version } = req.query;
 
         if (!platform || !current_native_version || !current_ota_version) {
             return res.status(400).json({ error: 'Missing required version parameters.' });
         }
 
-        // 1. Find the latest active release for this platform (Android or iOS)
         const latestRelease = await AppRelease.findOne({
             target_platform: platform,
             status: 'active'
-        }).sort({ created_at: -1 }); // Sort by newest first
+        }).sort({ created_at: -1 });
 
-        // If no active release exists in the DB, the app does nothing
         if (!latestRelease) {
             return res.json({ action: 'NONE' });
         }
 
-        // 2. Check if a Native update (APK) is required
-        // If the native versions don't match, the native shell is outdated
+        // Native mismatch -> force APK update
         if (latestRelease.native_version_required !== current_native_version) {
             return res.json({
                 action: 'APK',
-                is_mandatory: true, // Always force APK updates to prevent crashes
+                is_mandatory: true,
                 download_url: latestRelease.download_url,
                 release_version: latestRelease.release_version,
                 release_notes: latestRelease.release_notes || 'A major app update is required.'
             });
         }
 
-        // 3. Check if an OTA (Web/React) update is required
-        // If native versions match but the OTA version is older, trigger the web patch
+        // Native matches. Check if an OTA bump is expected.
         if (latestRelease.release_version !== current_ota_version) {
+
+            // 🆕 Confirm the OTA payload is actually reachable before telling the app to fetch it
+            let otaAvailable = false;
+            try {
+                const headResp = await fetch(latestRelease.download_url, { method: 'HEAD' });
+                otaAvailable = headResp.ok;
+            } catch (e) {
+                otaAvailable = false;
+            }
+
+            if (!otaAvailable) {
+                // No OTA payload exists on purpose — the native APK IS the update.
+                // Tell the frontend what version it should consider itself on.
+                return res.json({
+                    action: 'NONE',
+                    display_version: latestRelease.release_version
+                });
+            }
+
             return res.json({
-                action: latestRelease.update_type, // 'OTA' or 'APK' based on your DB control
+                action: latestRelease.update_type,
                 is_mandatory: latestRelease.is_mandatory,
                 download_url: latestRelease.download_url,
                 release_version: latestRelease.release_version,
@@ -48,8 +62,7 @@ appRouter.get('/check-update', async (req, res) => {
             });
         }
 
-        // 4. Everything matches. The app is fully up to date.
-        return res.json({ action: 'NONE' });
+        return res.json({ action: 'NONE', display_version: latestRelease.release_version });
 
     } catch (error) {
         console.error('Update check failed:', error);
