@@ -21,7 +21,7 @@ const LeaveRequest = require('../models/LeaveRequest');
 const Settings = require('../models/Settings');
 const { canSendEmailToUser } = require('../utils/canSendEmailToUser');
 const MediaLog = require('../models/MediaLog');
-const { PutObjectCommand, DeleteObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
+const { PutObjectCommand, DeleteObjectCommand, GetObjectCommand, ListObjectsV2Command } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const assetsS3Client = require('../config/assetsS3Client');
 const s3Client = require('../config/s3');
@@ -2060,6 +2060,49 @@ adminRouter.get('/employees/:id/media-filters', userAuth, adminAuth, async (req,
     } catch (error) {
         console.error("Fetch Media Filters Error:", error);
         res.status(500).json({ success: false, message: "Server error fetching historical filters." });
+    }
+});
+
+// ==========================================
+// 24b. GET MEDIA VAULT STORAGE STATS (10 GB LIMIT)
+// ==========================================
+adminRouter.get('/media-vault/storage-stats', userAuth, adminAuth, async (req, res) => {
+    try {
+        let totalSizeBytes = 0;
+        let isTruncated = true;
+        let continuationToken = undefined;
+
+        // Loop through the R2 bucket (handles pagination if you have > 1000 files)
+        while (isTruncated) {
+            const command = new ListObjectsV2Command({
+                Bucket: process.env.R2_BUCKET_NAME,
+                ContinuationToken: continuationToken
+            });
+
+            const response = await s3Client.send(command);
+
+            if (response.Contents && response.Contents.length > 0) {
+                totalSizeBytes += response.Contents.reduce((acc, item) => acc + item.Size, 0);
+            }
+
+            isTruncated = response.IsTruncated;
+            continuationToken = response.NextContinuationToken;
+        }
+
+        // 10 GB Storage Limit in Bytes
+        const TOTAL_STORAGE_LIMIT = 10737418240;
+
+        res.status(200).json({
+            success: true,
+            data: {
+                usedBytes: totalSizeBytes,
+                totalBytes: TOTAL_STORAGE_LIMIT
+            }
+        });
+
+    } catch (error) {
+        console.error("Storage Stats Calculation Error:", error);
+        res.status(500).json({ success: false, message: "Server error calculating storage." });
     }
 });
 
